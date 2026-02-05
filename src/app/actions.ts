@@ -149,18 +149,23 @@ export async function getElevenLabsAudio(text: string) {
 }
 
 export async function getProjects() {
-  const { data, error } = await supabase
-    .from("projects")
-    .select("*")
-    .order("created_at", { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from("projects")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-  if (error) {
-    console.error("Erreur Supabase getProjects:", error);
-    throw error;
+    if (error) {
+      console.error("Erreur Supabase getProjects:", error);
+      return [];
+    }
+    
+    // Sérialisation forcée pour Next.js Server Actions
+    return JSON.parse(JSON.stringify(data || []));
+  } catch (e) {
+    console.error("Erreur critique getProjects:", e);
+    return [];
   }
-  
-  // Sérialisation forcée pour Next.js Server Actions
-  return JSON.parse(JSON.stringify(data));
 }
 
 export async function getQuota() {

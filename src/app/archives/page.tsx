@@ -14,6 +14,8 @@ import {
 import Link from "next/link";
 import { motion } from "framer-motion";
 
+export const dynamic = "force-dynamic";
+
 export default function ArchivesPage() {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);

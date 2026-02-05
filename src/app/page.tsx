@@ -25,6 +25,8 @@ import Link from "next/link";
 import clsx from "clsx";
 import { generateContent, ContentPlan, Scene, saveProject, getElevenLabsAudio, getQuota } from "./actions";
 
+export const dynamic = "force-dynamic";
+
 export default function Home() {
   const [topic, setTopic] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
