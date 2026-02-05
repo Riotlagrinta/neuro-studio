@@ -1,6 +1,7 @@
 "use server";
 
 import { groq } from "@/lib/groq-client";
+import { supabase } from "@/lib/supabase";
 
 export interface Scene {
   id: number;
@@ -63,11 +64,45 @@ export async function generateContent(topic: string): Promise<ContentPlan> {
   }
 
   try {
-    // Nettoyage du JSON (au cas où l'IA ajoute des balises markdown ```json ... ```)
     const jsonString = content.replace(/```json/g, "").replace(/```/g, "").trim();
     return JSON.parse(jsonString) as ContentPlan;
   } catch (error) {
     console.error("Erreur de parsing JSON", error);
     throw new Error("Erreur lors de la génération du plan");
   }
+}
+
+export async function saveProject(topic: string, plan: ContentPlan) {
+  const { data, error } = await supabase
+    .from("projects")
+    .insert([{ title: plan.title, category: plan.category, plan, topic }])
+    .select();
+
+  if (error) throw error;
+  return data[0];
+}
+
+export async function getElevenLabsAudio(text: string) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) throw new Error("Clé API ElevenLabs manquante");
+
+  const voiceId = "pNInz6OB85MvRmPLz5QN"; // Voix "Adam" - Tu peux changer l'ID
+
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "xi-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: "eleven_multilingual_v2",
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+    }),
+  });
+
+  if (!response.ok) throw new Error("Erreur ElevenLabs");
+
+  const buffer = await response.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
 }
