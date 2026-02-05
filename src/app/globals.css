@@ -3,59 +3,52 @@
 @tailwind utilities;
 
 :root {
-  --bg: #020202;
-  --fg: #ffffff;
+  --background: #000000;
+  --foreground: #ffffff;
   --accent: #6366f1;
 }
 
 body {
-  background-color: var(--bg);
-  color: var(--fg);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', -apple-system, sans-serif;
+  letter-spacing: -0.01em;
 }
 
-/* Typographie Brutaliste */
-.text-huge {
-  font-size: clamp(3rem, 15vw, 12rem);
-  font-weight: 900;
-  line-height: 0.8;
-  letter-spacing: -0.05em;
-  text-transform: uppercase;
+/* Studio Glass */
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Bordures Cyber-Tech */
-.border-studio {
-  border: 1px solid rgba(255, 255, 255, 0.05);
+.scene-card {
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.border-studio:hover {
-  border: 1px solid rgba(255, 255, 255, 0.2);
+.scene-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Animations Tranchantes */
-.hover-reveal {
-  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.hover-reveal:hover {
-  transform: translateY(-4px);
-  background: #080808;
-}
-
-.ink-gradient {
-  background: linear-gradient(180deg, #050505 0%, #020202 100%);
-}
-
-/* Scrollbar invisible mais fonctionnelle */
+/* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 4px;
 }
 ::-webkit-scrollbar-track {
-  background: #020202;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #111;
+  background: #222;
+  border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--accent);
+}
+
+/* Typographie Studio */
+.heading-pro {
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1;
 }
