@@ -83,22 +83,26 @@ export async function generateContent(topic: string): Promise<ContentPlan> {
       return parsed;
     } catch (parseError) {
       console.error("Erreur de parsing JSON. Contenu brut:", content);
-      throw new Error("Erreur de formatage des données IA.");
+      throw new Error("ERREUR_FORMAT_IA");
     }
   } catch (error: any) {
     console.error("Erreur critique generateContent:", error);
-    throw new Error(error.message || "Échec de la connexion à l'IA.");
+    throw new Error(error.message || "ERREUR_CONNEXION_IA");
   }
 }
 
 export async function saveProject(topic: string, plan: ContentPlan) {
-  const { data, error } = await supabase
-    .from("projects")
-    .insert([{ title: plan.title, category: plan.category, plan, topic }])
-    .select();
+  try {
+    const { data, error } = await supabase
+      .from("projects")
+      .insert([{ title: plan.title, category: plan.category, plan, topic }])
+      .select();
 
-  if (error) throw error;
-  return data[0];
+    if (error) throw new Error(error.message);
+    return JSON.parse(JSON.stringify(data[0]));
+  } catch (e: any) {
+    throw new Error(e.message || "ERREUR_SAUVEGARDE");
+  }
 }
 
 import cloudinary from "@/lib/cloudinary";
