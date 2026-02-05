@@ -246,7 +246,10 @@ function Feature({ icon: Icon, title }: any) {
 function SceneCard({ scene, index }: { scene: Scene; index: number }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt)}?width=1280&height=720&nologo=true&model=flux`;
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
+
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt)}?width=1280&height=720&nologo=true&seed=${index + 42}`;
 
   const playVoice = async () => {
     if (isPlaying) return;
@@ -292,8 +295,32 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
         </div>
       </div>
 
-      <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-[#1a1a1a] group shadow-inner">
-         <img src={imageUrl} alt="" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+      <div className="relative aspect-video bg-[#0a0a0a] rounded-xl overflow-hidden border border-[#1a1a1a] group shadow-inner flex items-center justify-center">
+         {!imageLoaded && !imageError && (
+           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+             <Loader2 className="w-6 h-6 text-indigo-500 animate-spin" />
+             <span className="text-[8px] font-bold text-zinc-700 uppercase tracking-widest">IA Drawing...</span>
+           </div>
+         )}
+
+         {imageError ? (
+            <div className="flex flex-col items-center gap-2 text-zinc-700">
+               <ImageIcon className="w-8 h-8 opacity-20" />
+               <span className="text-[10px] font-bold uppercase tracking-widest">Image unavailable</span>
+            </div>
+         ) : (
+            <img 
+              src={imageUrl} 
+              alt="" 
+              onLoad={() => setImageLoaded(true)}
+              onError={() => setImageError(true)}
+              className={clsx(
+                "w-full h-full object-cover transition-all duration-1000",
+                imageLoaded ? "opacity-80 group-hover:opacity-100 scale-100" : "opacity-0 scale-105"
+              )} 
+            />
+         )}
+
          <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-60" />
          <div className="absolute bottom-4 left-4 right-4 translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
             <p className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-1 flex items-center gap-1">
