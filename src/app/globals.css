@@ -3,78 +3,59 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 10, 10, 12;
+  --bg: #020202;
+  --fg: #ffffff;
+  --accent: #6366f1;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
-  overflow-x: hidden;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-/* Effet de grain cinématographique */
-.grain-overlay {
-  position: fixed;
-  inset: -200%;
-  width: 400%;
-  height: 400%;
-  background-image: url("https://grainy-gradients.vercel.app/noise.svg");
-  opacity: 0.04;
-  pointer-events: none;
-  z-index: 9999;
-  animation: grain 8s steps(10) infinite;
+/* Typographie Brutaliste */
+.text-huge {
+  font-size: clamp(3rem, 15vw, 12rem);
+  font-weight: 900;
+  line-height: 0.8;
+  letter-spacing: -0.05em;
+  text-transform: uppercase;
 }
 
-@keyframes grain {
-  0%, 100% { transform: translate(0, 0); }
-  10% { transform: translate(-5%, -10%); }
-  20% { transform: translate(-15%, 5%); }
-  30% { transform: translate(7%, -25%); }
-  40% { transform: translate(-5%, 25%); }
-  50% { transform: translate(-15%, 10%); }
-  60% { transform: translate(15%, 0%); }
-  70% { transform: translate(0%, 15%); }
-  80% { transform: translate(3%, 35%); }
-  90% { transform: translate(-10%, 10%); }
+/* Bordures Cyber-Tech */
+.border-studio {
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-/* Lueur néon douce */
-.glow-text {
-  text-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+.border-studio:hover {
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.glass-card {
-  background: rgba(15, 15, 18, 0.6);
-  backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+/* Animations Tranchantes */
+.hover-reveal {
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.glass-card:hover {
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  background: rgba(20, 20, 25, 0.8);
+.hover-reveal:hover {
+  transform: translateY(-4px);
+  background: #080808;
 }
 
+.ink-gradient {
+  background: linear-gradient(180deg, #050505 0%, #020202 100%);
+}
+
+/* Scrollbar invisible mais fonctionnelle */
 ::-webkit-scrollbar {
-  width: 5px;
+  width: 4px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #000;
+  background: #020202;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 10px;
+  background: #111;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: var(--accent);
 }
