@@ -14,7 +14,9 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   FileDown,
-  Trash2
+  Trash2,
+  Mic2,
+  MessageSquareText
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
@@ -81,7 +83,7 @@ export default function Home() {
         margin: 10, 
         filename: 'production-docket.pdf', 
         html2canvas: { scale: 3, useCORS: true }, 
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } 
+        jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const } 
       };
       await html2pdf().from(element).set(opt).save();
     } finally {
@@ -273,9 +275,6 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
          </div>
       </div>
     </div>
-  );
-}
-
-// Missing imports in previous blocks
-import { Mic2 } from "lucide-react";
-import { MessageSquareText } from "lucide-react";
+    );
+  }
+  
