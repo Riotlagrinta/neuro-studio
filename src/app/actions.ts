@@ -108,8 +108,13 @@ export async function saveProject(topic: string, plan: ContentPlan) {
 
 export async function getElevenLabsAudio(text: string) {
   console.log("Démarrage génération audio ElevenLabs...");
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
   if (!apiKey) throw new Error("Clé API ElevenLabs manquante");
+
+  // Vérification de la configuration Cloudinary
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY) {
+    throw new Error("Configuration Cloudinary incomplète");
+  }
 
   try {
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/pNInz6OB85MvRmPLz5QN`, {

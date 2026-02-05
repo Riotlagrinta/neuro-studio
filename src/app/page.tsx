@@ -249,7 +249,7 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt)}?width=1280&height=720&nologo=true&seed=${index + 42}`;
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt)}?nologo=true&seed=${index + 42}`;
 
   const playVoice = async () => {
     if (isPlaying) return;
@@ -260,9 +260,9 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
       audio.onended = () => setIsPlaying(false);
       setIsPlaying(true);
       audio.play();
-    } catch (e) { 
+    } catch (e: any) { 
       console.error(e);
-      alert("Échec de lecture audio via Cloudinary.");
+      alert(`Erreur Audio: ${e.message || "Échec inconnu"}`);
     } finally { 
       setLoadingAudio(false); 
     }
