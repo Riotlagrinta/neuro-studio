@@ -90,9 +90,9 @@ export default function Home() {
       const opt = {
         margin: 0,
         filename: `${plan.title.replace(/\s+/g, "_")}_MASTER_DOCKET.pdf`,
-        image: { type: 'jpeg', quality: 1.0 },
+        image: { type: 'jpeg' as const, quality: 1.0 },
         html2canvas: { scale: 4, useCORS: true, letterRendering: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const }
       };
 
       await html2pdf().from(element).set(opt).save();
