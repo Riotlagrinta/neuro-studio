@@ -82,27 +82,79 @@ export async function saveProject(topic: string, plan: ContentPlan) {
   return data[0];
 }
 
+import cloudinary from "@/lib/cloudinary";
+
 export async function getElevenLabsAudio(text: string) {
+  console.log("Démarrage génération audio ElevenLabs...");
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) throw new Error("Clé API ElevenLabs manquante");
 
-  const voiceId = "pNInz6OB85MvRmPLz5QN"; // Voix "Adam" - Tu peux changer l'ID
+  try {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/pNInz6OB85MvRmPLz5QN`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
 
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "xi-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      text,
-      model_id: "eleven_multilingual_v2",
-      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-    }),
-  });
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("Erreur ElevenLabs détaillée:", errorData);
+      throw new Error(`Erreur ElevenLabs: ${response.status}`);
+    }
 
-  if (!response.ok) throw new Error("Erreur ElevenLabs");
+    const buffer = await response.arrayBuffer();
+    const base64Audio = Buffer.from(buffer).toString("base64");
+    
+    console.log("Upload vers Cloudinary en cours...");
+    const uploadResponse = await cloudinary.uploader.upload(`data:audio/mpeg;base64,${base64Audio}`, {
+      resource_type: "video",
+      folder: "neuro-studio-audios",
+    });
 
-  const buffer = await response.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
+    console.log("Upload Cloudinary réussi:", uploadResponse.secure_url);
+    return uploadResponse.secure_url;
+  } catch (error) {
+    console.error("Échec critique getElevenLabsAudio:", error);
+    throw error;
+  }
+}
+
+export async function getProjects() {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Erreur Supabase getProjects:", error);
+    throw error;
+  }
+  
+  // Sérialisation forcée pour Next.js Server Actions
+  return JSON.parse(JSON.stringify(data));
+}
+
+export async function getQuota() {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const response = await fetch("https://api.elevenlabs.io/v1/user/subscription", {
+      headers: { "xi-api-key": apiKey }
+    });
+    const data = await response.json();
+    return {
+      remaining: data.character_limit - data.character_count,
+      total: data.character_limit
+    };
+  } catch (e) {
+    return null;
+  }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { 
   Loader2, 
   Play, 
@@ -20,8 +20,9 @@ import {
   Layout
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
 import clsx from "clsx";
-import { generateContent, ContentPlan, Scene, saveProject, getElevenLabsAudio } from "./actions";
+import { generateContent, ContentPlan, Scene, saveProject, getElevenLabsAudio, getQuota } from "./actions";
 
 export default function Home() {
   const [topic, setTopic] = useState("");
@@ -31,6 +32,11 @@ export default function Home() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [plan, setPlan] = useState<ContentPlan | null>(null);
   const [error, setError] = useState("");
+  const [quota, setQuota] = useState<{remaining: number, total: number} | null>(null);
+
+  useEffect(() => {
+    getQuota().then(setQuota);
+  }, []);
 
   const handleGenerate = async () => {
     if (!topic.trim()) return;
@@ -105,7 +111,18 @@ export default function Home() {
           <span className="font-bold tracking-tight uppercase text-sm tracking-widest">NeuroStudio</span>
         </div>
         <div className="flex items-center gap-6">
+          {quota && (
+            <div className="hidden md:flex flex-col items-end">
+              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Audio Quota</span>
+              <span className="text-[10px] font-bold text-indigo-400">{quota.remaining.toLocaleString()} chars left</span>
+            </div>
+          )}
+          <Link href="/archives" className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors">
+            <History className="w-5 h-5" />
+            <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-widest">Archives</span>
+          </Link>
           <a href="https://github.com/Riotlagrinta" target="_blank" className="text-zinc-500 hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+          <div className="h-4 w-px bg-[#1a1a1a]" />
           <div className="px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
             Professional v3.0
           </div>
@@ -220,12 +237,17 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
     if (isPlaying) return;
     setLoadingAudio(true);
     try {
-      const base64 = await getElevenLabsAudio(scene.voiceOver);
-      const audio = new Audio(`data:audio/mpeg;base64,${base64}`);
+      const audioUrl = await getElevenLabsAudio(scene.voiceOver);
+      const audio = new Audio(audioUrl);
       audio.onended = () => setIsPlaying(false);
       setIsPlaying(true);
       audio.play();
-    } catch (e) { console.error(e); } finally { setLoadingAudio(false); }
+    } catch (e) { 
+      console.error(e);
+      alert("Échec de lecture audio via Cloudinary.");
+    } finally { 
+      setLoadingAudio(false); 
+    }
   };
 
   return (
