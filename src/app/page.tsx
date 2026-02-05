@@ -343,7 +343,8 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
             </p>
             <p className="text-[10px] font-medium text-white/60 italic line-clamp-2">{scene.visualPrompt}</p>
          </div>
-      </motion.div>
-    </div>
-  );
-}
+            </motion.div>
+          </motion.div>
+        );
+      }
+      
