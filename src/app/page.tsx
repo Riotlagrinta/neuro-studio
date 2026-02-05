@@ -10,13 +10,14 @@ import {
   Save,
   Github,
   ChevronRight,
-  Maximize2,
   Image as ImageIcon,
   CheckCircle2,
   FileDown,
   Trash2,
   Mic2,
-  MessageSquareText
+  MessageSquareText,
+  Clapperboard,
+  Layout
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
@@ -40,7 +41,7 @@ export default function Home() {
       const result = await generateContent(topic);
       setPlan(result);
     } catch (err) {
-      setError("AI Engine Overload. Try again.");
+      setError("AI Engine error. Please retry.");
     } finally {
       setIsGenerating(false);
     }
@@ -54,7 +55,7 @@ export default function Home() {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
-      setError("Cloud Sync Failed.");
+      setError("Cloud sync failed.");
     } finally {
       setIsSaving(false);
     }
@@ -67,23 +68,23 @@ export default function Home() {
       const html2pdf = (await import("html2pdf.js")).default;
       const element = document.createElement("div");
       element.innerHTML = `
-        <div style="padding: 60px; font-family: 'Inter', sans-serif; background: #fff; color: #000;">
-          <h1 style="font-size: 42px; font-weight: 800; letter-spacing: -2px; margin-bottom: 5px;">${plan.title}</h1>
-          <p style="font-size: 12px; font-weight: 700; color: #6366f1; text-transform: uppercase; margin-bottom: 40px;">${plan.category} • Production Script</p>
+        <div style="padding: 40px; font-family: sans-serif; background: white; color: black;">
+          <h1 style="font-size: 32px; margin-bottom: 0;">${plan.title}</h1>
+          <p style="color: #666; text-transform: uppercase; font-size: 12px; margin-bottom: 30px;">${plan.category} • Script</p>
           ${plan.scenes.map(s => `
-            <div style="margin-bottom: 40px; border-top: 1px solid #eee; padding-top: 20px; page-break-inside: avoid;">
-              <p style="font-size: 10px; font-weight: 800;">SCENE ${s.id} • ${s.duration}S</p>
-              <p style="font-size: 22px; font-weight: 700; line-height: 1.2; margin: 15px 0;">"${s.voiceOver}"</p>
-              <img src="https://image.pollinations.ai/prompt/${encodeURIComponent(s.visualPrompt)}?width=800" style="width: 100%; border-radius: 12px;" />
+            <div style="margin-bottom: 30px; border-top: 1px solid #eee; padding-top: 20px; page-break-inside: avoid;">
+              <p style="font-size: 10px; font-weight: bold;">SCENE ${s.id}</p>
+              <p style="font-size: 18px; margin: 10px 0;">"${s.voiceOver}"</p>
+              <img src="https://image.pollinations.ai/prompt/${encodeURIComponent(s.visualPrompt)}?width=800" style="width: 100%; border-radius: 8px;" />
             </div>
           `).join("")}
         </div>
       `;
       const opt = { 
         margin: 10, 
-        filename: 'production-docket.pdf', 
+        filename: 'production.pdf', 
         image: { type: 'jpeg' as const, quality: 1.0 },
-        html2canvas: { scale: 3, useCORS: true }, 
+        html2canvas: { scale: 2, useCORS: true }, 
         jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const } 
       };
       await html2pdf().from(element).set(opt).save();
@@ -93,167 +94,104 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-[#E2E2E2] antialiased font-sans overflow-x-hidden relative">
-      {/* Background Aura Dynamique */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <motion.div 
-          animate={{ 
-            scale: [1, 1.2, 1],
-            x: [0, 30, 0],
-            y: [0, 50, 0],
-          }}
-          transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-600/10 blur-[120px] rounded-full" 
-        />
-        <motion.div 
-          animate={{ 
-            scale: [1.2, 1, 1.2],
-            x: [0, -30, 0],
-            y: [0, -50, 0],
-          }}
-          transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-purple-600/10 blur-[120px] rounded-full" 
-        />
-      </div>
-
+    <div className="min-h-screen bg-black text-white selection:bg-indigo-500/30">
+      
       {/* Header */}
-      <motion.header 
-        initial={{ y: -100 }}
-        animate={{ y: 0 }}
-        transition={{ type: "spring", stiffness: 100, damping: 20 }}
-        className="fixed top-0 inset-x-0 h-16 border-b border-white/5 bg-black/40 backdrop-blur-2xl z-50 px-8 flex items-center justify-between"
-      >
-        <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setPlan(null)}>
-          <motion.div 
-            whileHover={{ rotate: 180, scale: 1.1 }}
-            className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20"
-          >
+      <header className="h-16 border-b border-[#1a1a1a] bg-black/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-8">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setPlan(null)}>
+          <div className="w-8 h-8 bg-indigo-600 rounded flex items-center justify-center">
             <Sparkles className="w-5 h-5 text-white" />
-          </motion.div>
-          <span className="font-bold tracking-tighter text-white uppercase text-sm group-hover:tracking-widest transition-all duration-500">
-            NeuroStudio <span className="text-white/40 font-medium">PRO</span>
-          </span>
+          </div>
+          <span className="font-bold tracking-tight uppercase text-sm tracking-widest">NeuroStudio</span>
         </div>
         <div className="flex items-center gap-6">
-          <a href="https://github.com/Riotlagrinta" target="_blank" className="text-white/40 hover:text-white hover:scale-110 transition-all"><Github className="w-5 h-5" /></a>
-          <div className="h-4 w-px bg-white/10" />
-          <div className="flex items-center gap-2 px-3 py-1 bg-white/5 rounded-full border border-white/5 shadow-inner">
-             <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_#22c55e]" />
-             <span className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Neural Link Active</span>
+          <a href="https://github.com/Riotlagrinta" target="_blank" className="text-zinc-500 hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+          <div className="px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
+            Professional v3.0
           </div>
         </div>
-      </motion.header>
+      </header>
 
-      {/* Main UI */}
-      <div className="pt-32 pb-40 max-w-5xl mx-auto px-6 relative z-10">
+      <div className="max-w-6xl mx-auto px-6 py-20">
         
-        {/* Landing/Hero */}
+        {/* Landing */}
         {!plan && !isGenerating && (
-          <div className="space-y-24">
-            <motion.div 
-              initial={{ opacity: 0, x: -50 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
-              className="space-y-8"
-            >
-              <h1 className="text-7xl md:text-9xl font-black tracking-tighter text-white leading-[0.85] italic">
-                DIRECT THE <br />
-                <span className="text-indigo-500 drop-shadow-[0_0_30px_rgba(99,102,241,0.3)]">FUTURE.</span>
+          <div className="space-y-16">
+            <div className="space-y-6 max-w-3xl">
+              <h1 className="text-5xl md:text-7xl font-bold tracking-tighter leading-tight">
+                Créez vos storyboards <br />
+                <span className="text-zinc-500">avec une IA de pointe.</span>
               </h1>
-              <p className="max-w-xl text-white/40 text-xl font-medium leading-relaxed border-l-2 border-indigo-500/20 pl-6">
-                L'IA ne remplace pas le réalisateur, elle lui donne des super-pouvoirs. 
-                Générez des storyboards cinématographiques en un éclair.
+              <p className="text-zinc-400 text-xl leading-relaxed">
+                NeuroStudio transforme vos idées en plans de production complets. 
+                Scripts viraux, visuels cinématographiques et voix ElevenLabs.
               </p>
-            </motion.div>
+            </div>
 
-            <motion.div 
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="relative group max-w-2xl"
-            >
-              <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-[2rem] blur-2xl opacity-0 group-hover:opacity-30 transition-opacity duration-700" />
-              <div className="relative glass p-2 rounded-3xl flex items-center shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-white/5">
-                <input
-                  type="text"
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="What's your vision?"
-                  className="flex-1 bg-transparent px-6 py-4 outline-none text-lg font-medium placeholder:text-white/10"
-                  onKeyDown={(e) => e.key === "Enter" && handleGenerate()}
-                />
-                <motion.button
-                  whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(99, 102, 241, 0.4)" }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={handleGenerate}
-                  className="bg-white text-black px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center gap-2"
-                >
-                  <Wand2 className="w-5 h-5" /> Initiate
-                </motion.button>
-              </div>
-            </motion.div>
-            
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-12 pt-12 border-t border-white/5">
-               <FeatureItem icon={MessageSquareText} title="Smart Script" delay={0.4} />
-               <FeatureItem icon={ImageIcon} title="AI Storyboard" delay={0.5} />
-               <FeatureItem icon={Mic2} title="Audio Engine" delay={0.6} />
+            <div className="max-w-2xl bg-[#0a0a0a] border border-[#1a1a1a] p-2 rounded-2xl flex items-center shadow-2xl">
+              <input
+                type="text"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder="Quel est votre sujet ?"
+                className="flex-1 bg-transparent px-6 py-4 outline-none text-lg placeholder:text-zinc-700"
+                onKeyDown={(e) => e.key === "Enter" && handleGenerate()}
+              />
+              <button
+                onClick={handleGenerate}
+                disabled={isGenerating || !topic.trim()}
+                className="bg-white text-black px-8 py-4 rounded-xl font-bold hover:bg-indigo-600 hover:text-white transition-all flex items-center gap-2"
+              >
+                <Wand2 className="w-5 h-5" /> Générer
+              </button>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-8 pt-10 border-t border-[#1a1a1a]">
+               <Feature icon={MessageSquareText} title="Scripting IA" />
+               <Feature icon={ImageIcon} title="Storyboard" />
+               <Feature icon={Mic2} title="Voix Pro" />
             </div>
           </div>
         )}
 
-        {/* Loader */}
+        {/* Loading */}
         {isGenerating && (
-          <div className="h-[50vh] flex flex-col justify-center items-center gap-12">
-             <div className="relative">
-                <motion.div 
-                   animate={{ rotate: 360, borderTopColor: ["#6366f1", "#a855f7", "#6366f1"] }}
-                   transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                   className="w-24 h-24 border-t-2 border-r-2 border-transparent rounded-full shadow-[0_0_30px_rgba(99,102,241,0.2)]" 
-                />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Sparkles className="w-8 h-8 text-indigo-500 animate-pulse" />
-                </div>
-             </div>
-             <div className="text-center space-y-2">
-                <p className="text-white font-black uppercase tracking-[0.5em] text-xs">Neural Synthesis</p>
-                <p className="text-white/20 text-[10px] font-mono uppercase tracking-widest animate-pulse italic">Assembling cinematic metadata...</p>
-             </div>
+          <div className="h-[40vh] flex flex-col justify-center items-center gap-6">
+             <Loader2 className="w-12 h-12 text-indigo-500 animate-spin" />
+             <p className="text-zinc-500 font-bold uppercase tracking-widest text-xs animate-pulse">Génération du storyboard...</p>
           </div>
         )}
 
         {/* Studio Editor */}
         <AnimatePresence>
           {plan && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }} 
-              animate={{ opacity: 1, scale: 1 }} 
-              className="space-y-16"
-            >
-              <div className="glass p-8 rounded-[2rem] flex flex-col md:flex-row justify-between items-center gap-8 shadow-3xl sticky top-20 z-40">
-                <div className="space-y-2 text-center md:text-left">
-                  <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest px-3 py-1 bg-indigo-500/10 rounded-full">{plan.category}</span>
-                  <h2 className="text-3xl font-black text-white tracking-tight italic uppercase">{plan.title}</h2>
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-12">
+              
+              {/* Toolbar */}
+              <div className="bg-[#0a0a0a] border border-[#1a1a1a] p-8 rounded-2xl flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl">
+                <div>
+                  <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest px-2 py-1 bg-indigo-500/10 rounded">{plan.category}</span>
+                  <h2 className="text-3xl font-bold mt-2">{plan.title}</h2>
                 </div>
                 <div className="flex gap-3">
-                   <button onClick={handleSave} disabled={isSaving} className="flex items-center gap-2 px-5 py-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/5 transition-all text-xs font-bold uppercase tracking-widest">
+                   <button onClick={handleSave} disabled={isSaving} className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] rounded-lg border border-[#333] transition-all text-xs font-bold">
                      {isSaving ? <Loader2 className="w-4 h-4 animate-spin text-indigo-500" /> : (saveSuccess ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Save className="w-4 h-4" />)}
-                     {saveSuccess ? "Synced" : "Cloud Save"}
+                     {saveSuccess ? "Sauvegardé" : "Enregistrer"}
                    </button>
-                   <button onClick={masterExport} disabled={isExporting} className="flex items-center gap-3 px-8 py-4 bg-white text-black hover:bg-indigo-500 hover:text-white rounded-xl transition-all text-xs font-black uppercase tracking-widest shadow-lg">
+                   <button onClick={masterExport} disabled={isExporting} className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-indigo-500 hover:text-white rounded-lg transition-all text-xs font-bold">
                      {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
-                     Export Master
-                   </button>
-                   <button onClick={() => setPlan(null)} className="p-4 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-xl transition-all border border-red-500/10">
-                      <Trash2 className="w-5 h-5" />
+                     Exporter PDF
                    </button>
                 </div>
               </div>
 
-              <div className="grid gap-12">
+              {/* Grid Layout for Scenes */}
+              <div className="grid gap-8">
                 {plan.scenes.map((scene, index) => (
                   <SceneCard key={scene.id} scene={scene} index={index} />
                 ))}
               </div>
+
             </motion.div>
           )}
         </AnimatePresence>
@@ -262,19 +200,14 @@ export default function Home() {
   );
 }
 
-function FeatureItem({ icon: Icon, title, delay }: any) {
+function Feature({ icon: Icon, title }: any) {
   return (
-    <motion.div 
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay }}
-      className="flex items-center gap-4 opacity-40 hover:opacity-100 transition-opacity cursor-default group"
-    >
-      <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center border border-white/5 group-hover:bg-indigo-500/10 group-hover:border-indigo-500/50 transition-all">
-        <Icon className="w-5 h-5 group-hover:scale-110 transition-transform" />
+    <div className="flex items-center gap-4 group">
+      <div className="w-12 h-12 rounded-xl bg-[#0a0a0a] border border-[#1a1a1a] flex items-center justify-center group-hover:border-indigo-500 transition-colors">
+        <Icon className="w-6 h-6 text-zinc-500 group-hover:text-indigo-500 transition-colors" />
       </div>
-      <span className="text-xs font-black uppercase tracking-widest">{title}</span>
-    </motion.div>
+      <span className="text-sm font-bold uppercase tracking-widest text-zinc-500">{title}</span>
+    </div>
   );
 }
 
@@ -296,55 +229,42 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
   };
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 30 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "-100px" }}
-      className="scene-card glass p-8 sm:p-10 rounded-[2.5rem] grid lg:grid-cols-[1.4fr,1fr] gap-12 items-center hover:shadow-[0_0_50px_rgba(99,102,241,0.1)] transition-all duration-700"
-    >
-      <div className="space-y-8 order-2 lg:order-1">
+    <div className="studio-card p-8 grid lg:grid-cols-[1.5fr,1fr] gap-12 items-center">
+      <div className="space-y-8">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-             <span className="w-10 h-10 flex items-center justify-center bg-white/5 rounded-xl text-[10px] font-black border border-white/5">0{index + 1}</span>
-             <div className="h-px w-20 bg-white/5" />
-             <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">{scene.duration} Seconds</span>
+             <span className="w-8 h-8 flex items-center justify-center bg-[#1a1a1a] rounded text-[10px] font-bold border border-[#333]">0{index + 1}</span>
+             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{scene.duration} Secondes</span>
           </div>
-          <motion.button 
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
+          <button 
             onClick={playVoice} 
-            className={clsx("w-12 h-12 rounded-full flex items-center justify-center border transition-all shadow-xl", isPlaying ? "bg-indigo-600 border-indigo-500" : "bg-white/5 border-white/5 hover:border-indigo-500/50")}
+            className={clsx("w-10 h-10 rounded-full flex items-center justify-center border transition-all", isPlaying ? "bg-indigo-600 border-indigo-500" : "bg-[#1a1a1a] border-[#333] hover:border-indigo-500")}
           >
-            {loadingAudio ? <Loader2 className="w-4 h-4 animate-spin" /> : (isPlaying ? <div className="w-3 h-3 bg-white rounded-sm animate-pulse" /> : <Play className="w-4 h-4 fill-white" />)}
-          </motion.button>
+            {loadingAudio ? <Loader2 className="w-4 h-4 animate-spin" /> : (isPlaying ? <div className="w-2 h-2 bg-white rounded-sm animate-pulse" /> : <Play className="w-4 h-4 fill-white" />)}
+          </button>
         </div>
 
-        <p className="text-2xl md:text-4xl font-black leading-tight text-white uppercase italic tracking-tight">
+        <p className="text-2xl font-bold leading-snug text-zinc-100">
           "{scene.voiceOver}"
         </p>
 
         <div className="flex flex-wrap gap-2">
           {scene.videoKeywords.split(",").map((kw, i) => (
-            <span key={i} className="text-[9px] font-bold text-white/30 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5 uppercase tracking-widest">#{kw.trim()}</span>
+            <span key={i} className="text-[9px] font-bold text-zinc-600 bg-black px-2 py-1 rounded border border-[#1a1a1a] uppercase tracking-widest">#{kw.trim()}</span>
           ))}
         </div>
       </div>
 
-      <motion.div 
-        whileHover={{ scale: 1.05, rotateZ: 1 }}
-        transition={{ duration: 0.8 }}
-        className="relative aspect-video bg-zinc-900 rounded-[2rem] overflow-hidden border border-white/10 group shadow-2xl order-1 lg:order-2"
-      >
-         <img src={imageUrl} alt="" className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-all duration-1000 scale-110 group-hover:scale-100" />
-         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60" />
-         <div className="absolute bottom-6 left-6 right-6 translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-500">
-            <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1 flex items-center gap-2">
-               <Sparkles className="w-3 h-3" /> Visual Blueprint
+      <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-[#1a1a1a] group shadow-inner">
+         <img src={imageUrl} alt="" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+         <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-60" />
+         <div className="absolute bottom-4 left-4 right-4 translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
+            <p className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-1 flex items-center gap-1">
+               <Sparkles className="w-3 h-3" /> IA Visual
             </p>
-            <p className="text-[10px] font-medium text-white/60 italic line-clamp-2">{scene.visualPrompt}</p>
+            <p className="text-[10px] text-zinc-500 font-medium italic line-clamp-2">{scene.visualPrompt}</p>
          </div>
-            </motion.div>
-          </motion.div>
-        );
-      }
-      
+      </div>
+    </div>
+  );
+}
