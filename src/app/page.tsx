@@ -47,8 +47,9 @@ export default function Home() {
     try {
       const result = await generateContent(topic);
       setPlan(result);
-    } catch (err) {
-      setError("AI Engine error. Please retry.");
+    } catch (err: any) {
+      console.error("HandleGenerate Error:", err);
+      setError(err.message || "AI Engine error. Please retry.");
     } finally {
       setIsGenerating(false);
     }
@@ -164,6 +165,17 @@ export default function Home() {
               </button>
             </div>
 
+            {error && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }} 
+                animate={{ opacity: 1, y: 0 }}
+                className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-sm font-bold flex items-center gap-3"
+              >
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                {error}
+              </motion.div>
+            )}
+
             <div className="grid md:grid-cols-3 gap-8 pt-10 border-t border-[#1a1a1a]">
                <Feature icon={MessageSquareText} title="Scripting IA" />
                <Feature icon={ImageIcon} title="Storyboard" />
@@ -272,9 +284,9 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
         </p>
 
         <div className="flex flex-wrap gap-2">
-          {scene.videoKeywords.split(",").map((kw, i) => (
+          {scene.videoKeywords && typeof scene.videoKeywords === "string" ? scene.videoKeywords.split(",").map((kw, i) => (
             <span key={i} className="text-[9px] font-bold text-zinc-600 bg-black px-2 py-1 rounded border border-[#1a1a1a] uppercase tracking-widest">#{kw.trim()}</span>
-          ))}
+          )) : null}
         </div>
       </div>
 

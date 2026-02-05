@@ -47,28 +47,47 @@ export async function generateContent(topic: string): Promise<ContentPlan> {
     }
   `;
 
-  const completion = await groq.chat.completions.create({
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: `Sujet de la vidéo : ${topic}` },
-    ],
-    model: "llama3-70b-8192", // Modèle rapide et intelligent
-    temperature: 0.7,
-    response_format: { type: "json_object" },
-  });
-
-  const content = completion.choices[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("Aucune réponse de l'IA");
-  }
+  console.log("Démarrage de la génération pour le sujet:", topic);
 
   try {
-    const jsonString = content.replace(/```json/g, "").replace(/```/g, "").trim();
-    return JSON.parse(jsonString) as ContentPlan;
-  } catch (error) {
-    console.error("Erreur de parsing JSON", error);
-    throw new Error("Erreur lors de la génération du plan");
+    const completion = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Sujet de la vidéo : ${topic}` },
+      ],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+      response_format: { type: "json_object" },
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    console.log("Réponse reçue de Groq");
+
+    if (!content) {
+      console.error("Réponse Groq vide");
+      throw new Error("L'IA n'a retourné aucun contenu.");
+    }
+
+    try {
+      // Extraction plus robuste du JSON au cas où il y aurait du texte autour
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const jsonString = jsonMatch ? jsonMatch[0] : content;
+      
+      const parsed = JSON.parse(jsonString) as ContentPlan;
+      
+      if (!parsed.scenes || !Array.isArray(parsed.scenes)) {
+        throw new Error("Format de scènes invalide");
+      }
+
+      console.log("Plan généré avec succès:", parsed.title);
+      return parsed;
+    } catch (parseError) {
+      console.error("Erreur de parsing JSON. Contenu brut:", content);
+      throw new Error("Erreur de formatage des données IA.");
+    }
+  } catch (error: any) {
+    console.error("Erreur critique generateContent:", error);
+    throw new Error(error.message || "Échec de la connexion à l'IA.");
   }
 }
 
