@@ -249,20 +249,23 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt)}?nologo=true&seed=${index + 42}`;
+  // Utilisation d'une URL simplifiée au maximum pour Pollinations
+  const cleanPrompt = scene.visualPrompt.replace(/[^\w\s,]/gi, "").slice(0, 200);
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?nologo=true&seed=${index + 100}`;
 
   const playVoice = async () => {
     if (isPlaying) return;
     setLoadingAudio(true);
     try {
       const audioUrl = await getElevenLabsAudio(scene.voiceOver);
+      if (!audioUrl) throw new Error("URL_VIDE");
       const audio = new Audio(audioUrl);
       audio.onended = () => setIsPlaying(false);
       setIsPlaying(true);
       audio.play();
     } catch (e: any) { 
-      console.error(e);
-      alert(`Erreur Audio: ${e.message || "Échec inconnu"}`);
+      console.error("Audio UI Error:", e.message);
+      alert(`Erreur Audio: ${e.message || "Action failed"}`);
     } finally { 
       setLoadingAudio(false); 
     }
