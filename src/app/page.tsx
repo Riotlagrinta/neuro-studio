@@ -17,7 +17,7 @@ import {
   Mic2,
   MessageSquareText,
   Clapperboard,
-  Layout,
+  Layout as LayoutIcon,
   History
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";

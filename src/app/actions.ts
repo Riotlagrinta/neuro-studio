@@ -2,6 +2,7 @@
 
 import { groq } from "@/lib/groq-client";
 import { supabase } from "@/lib/supabase";
+import cloudinary from "@/lib/cloudinary";
 
 export interface Scene {
   id: number;
@@ -104,8 +105,6 @@ export async function saveProject(topic: string, plan: ContentPlan) {
     throw new Error(e.message || "ERREUR_SAUVEGARDE");
   }
 }
-
-import cloudinary from "@/lib/cloudinary";
 
 export async function getElevenLabsAudio(text: string) {
   console.log("Démarrage génération audio ElevenLabs...");
