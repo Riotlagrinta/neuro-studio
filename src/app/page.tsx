@@ -48,10 +48,13 @@ export default function Home() {
     setPlan(null);
     try {
       const result = await generateContent(topic);
-      setPlan(result);
+      if (result.success) {
+        setPlan(result.data);
+      } else {
+        setError(result.error || "AI_ERROR");
+      }
     } catch (err: any) {
-      console.error("HandleGenerate Error:", err);
-      setError(err.message || "AI Engine error. Please retry.");
+      setError("SERVER_CONNECTION_ERROR");
     } finally {
       setIsGenerating(false);
     }
@@ -61,11 +64,15 @@ export default function Home() {
     if (!plan || !topic) return;
     setIsSaving(true);
     try {
-      await saveProject(topic, plan);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      const result = await saveProject(topic, plan);
+      if (result.success) {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 3000);
+      } else {
+        setError(result.error || "SAVE_ERROR");
+      }
     } catch (err) {
-      setError("Cloud sync failed.");
+      setError("NETWORK_ERROR");
     } finally {
       setIsSaving(false);
     }
@@ -85,7 +92,7 @@ export default function Home() {
             <div style="margin-bottom: 30px; border-top: 1px solid #eee; padding-top: 20px; page-break-inside: avoid;">
               <p style="font-size: 10px; font-weight: bold;">SCENE ${s.id}</p>
               <p style="font-size: 18px; margin: 10px 0;">"${s.voiceOver}"</p>
-              <img src="https://image.pollinations.ai/prompt/${encodeURIComponent(s.visualPrompt)}?width=800" style="width: 100%; border-radius: 8px;" />
+              <img src="https://image.pollinations.ai/prompt/${encodeURIComponent(s.visualPrompt.slice(0, 100))}?nologo=true" style="width: 100%; border-radius: 8px;" />
             </div>
           `).join("")}
         </div>
@@ -171,7 +178,7 @@ export default function Home() {
               <motion.div 
                 initial={{ opacity: 0, y: -10 }} 
                 animate={{ opacity: 1, y: 0 }}
-                className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-sm font-bold flex items-center gap-3"
+                className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[10px] font-bold flex items-center gap-3 uppercase tracking-widest"
               >
                 <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                 {error}
@@ -249,23 +256,24 @@ function SceneCard({ scene, index }: { scene: Scene; index: number }) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  // Utilisation d'une URL simplifiée au maximum pour Pollinations
-  const cleanPrompt = scene.visualPrompt.replace(/[^\w\s,]/gi, "").slice(0, 200);
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?nologo=true&seed=${index + 100}`;
+  // URL simplifiée pour éviter les erreurs de caractères
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt.slice(0, 150))}?nologo=true&seed=${index + 500}`;
 
   const playVoice = async () => {
     if (isPlaying) return;
     setLoadingAudio(true);
     try {
-      const audioUrl = await getElevenLabsAudio(scene.voiceOver);
-      if (!audioUrl) throw new Error("URL_VIDE");
-      const audio = new Audio(audioUrl);
-      audio.onended = () => setIsPlaying(false);
-      setIsPlaying(true);
-      audio.play();
+      const result = await getElevenLabsAudio(scene.voiceOver);
+      if (result.success && result.url) {
+        const audio = new Audio(result.url);
+        audio.onended = () => setIsPlaying(false);
+        setIsPlaying(true);
+        audio.play();
+      } else {
+        alert(`Erreur Audio: ${result.error || "Action failed"}`);
+      }
     } catch (e: any) { 
-      console.error("Audio UI Error:", e.message);
-      alert(`Erreur Audio: ${e.message || "Action failed"}`);
+      alert("Erreur réseau audio");
     } finally { 
       setLoadingAudio(false); 
     }
