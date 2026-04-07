@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🧠 Neuro-Studio v4.0
 
-## Getting Started
+**Neuro-Studio** est un studio de production vidéo intelligent conçu pour les créateurs de contenu. Il transforme des idées brutes en storyboards cinématographiques complets avec scripts, voix-off professionnelles et visuels synchronisés.
 
-First, run the development server:
+## 🚀 Fonctionnalités Clés
 
+- **Scripting IA (Groq) :** Génération ultra-rapide de scripts structurés avec `llama-3.3-70b`.
+- **Voix-off (ElevenLabs) :** Synthèse vocale multilingue haute fidélité.
+- **Storyboard Vidéo (Replicate) :** Génération de visuels et clips vidéo synchronisés sur la durée de l'audio.
+- **Stockage Cloud (Cloudinary) :** Hébergement optimisé des ressources audio et vidéo.
+- **Base de Données (Neon) :** Persistance des projets sur PostgreSQL (Serverless).
+- **Exportation PDF :** Génération de fiches de production professionnelles.
+
+## 🛠️ Stack Technique
+
+- **Framework :** Next.js 16 (App Router)
+- **Langage :** TypeScript
+- **Style :** Tailwind CSS 4 & Framer Motion
+- **Base de Données :** Neon (PostgreSQL)
+- **IA & Médias :**
+  - Groq (LLM)
+  - ElevenLabs (TTS)
+  - Replicate (Génération Vidéo/Image)
+  - Cloudinary (Stockage)
+
+## 📦 Installation
+
+1. Clonez le dépôt :
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/votre-repo/neuro-studio.git
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Installez les dépendances :
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Configurez les variables d'environnement (`.env.local`) :
+```env
+DATABASE_URL=postgres://... (Neon)
+GROQ_API_KEY=...
+ELEVENLABS_API_KEY=...
+CLOUDINARY_URL=...
+REPLICATE_API_TOKEN=...
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+4. Lancez le serveur de développement :
+```bash
+npm run dev
+```
 
-## Learn More
+## 📜 Licence
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Propriété de **Kelvix Digital Agency**. Tous droits réservés.

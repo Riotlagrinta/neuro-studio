@@ -4,10 +4,14 @@ const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
 const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
 const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
 
+if (!cloudName || !apiKey || !apiSecret) {
+  console.warn("⚠️ Cloudinary configuration missing. Uploads will fail.");
+}
+
 cloudinary.config({
-  cloud_name: cloudName || "missing",
-  api_key: apiKey || "missing",
-  api_secret: apiSecret || "missing",
+  cloud_name: cloudName,
+  api_key: apiKey,
+  api_secret: apiSecret,
   secure: true,
 });
 

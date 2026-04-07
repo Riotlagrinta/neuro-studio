@@ -1,13 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getProjects } from "../actions";
+import { getProjects, Scene } from "../actions";
 import { 
   Sparkles, 
   ChevronLeft, 
   History, 
   Calendar, 
-  ExternalLink,
   Loader2,
   Github
 } from "lucide-react";
@@ -16,13 +15,24 @@ import { motion } from "framer-motion";
 
 export const dynamic = "force-dynamic";
 
+interface Project {
+  id: number;
+  title: string;
+  category: string;
+  topic: string;
+  plan: {
+    scenes: Scene[];
+  };
+  created_at: string;
+}
+
 export default function ArchivesPage() {
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     getProjects()
-      .then(setProjects)
+      .then((data: Project[]) => setProjects(data))
       .finally(() => setLoading(false));
   }, []);
 

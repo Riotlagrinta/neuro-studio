@@ -1,7 +1,7 @@
 "use server";
 
 import { groq } from "@/lib/groq-client";
-import { supabase } from "@/lib/supabase";
+import { sql } from "@/lib/db";
 import cloudinary from "@/lib/cloudinary";
 
 export interface Scene {
@@ -10,6 +10,8 @@ export interface Scene {
   visualPrompt: string;
   videoKeywords: string;
   duration: number;
+  imageUrl?: string;
+  videoUrl?: string;
 }
 
 export interface ContentPlan {
@@ -45,8 +47,29 @@ export async function generateContent(topic: string) {
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     const data = JSON.parse(jsonMatch ? jsonMatch[0] : content);
     return { success: true, data: JSON.parse(JSON.stringify(data)) };
-  } catch (error: any) {
-    return { success: false, error: error.message || "ECHEC_GEN" };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "ECHEC_GEN";
+    return { success: false, error: message };
+  }
+}
+
+export async function generateImage(prompt: string, ratio: "16:9" | "9:16" = "16:9") {
+  try {
+    console.log(`Génération Image Pollinations (${ratio}) pour:`, prompt);
+    
+    // Calcul des dimensions selon le ratio
+    const width = ratio === "16:9" ? 1280 : 720;
+    const height = ratio === "16:9" ? 720 : 1280;
+    
+    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 150))}?nologo=true&width=${width}&height=${height}&seed=${Math.floor(Math.random() * 1000)}`;
+    
+    const uploadResponse = await cloudinary.uploader.upload(fallbackUrl, {
+      folder: "neuro-studio-free",
+    });
+
+    return { success: true, url: uploadResponse.secure_url };
+  } catch (error: unknown) {
+    return { success: false, error: "ECHEC_IMAGE_GRATUITE" };
   }
 }
 
@@ -76,31 +99,38 @@ export async function getElevenLabsAudio(text: string) {
     });
 
     return { success: true, url: uploadResponse.secure_url };
-  } catch (error: any) {
-    return { success: false, error: error.message || "ECHEC_AUDIO" };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "ECHEC_AUDIO";
+    return { success: false, error: message };
   }
+}
+
+export async function generateVideo(imageUrl: string, prompt: string) {
+  return { success: true, url: imageUrl, isSimulated: true };
 }
 
 export async function saveProject(topic: string, plan: ContentPlan) {
   try {
-    const { data, error } = await supabase
-      .from("projects")
-      .insert([{ title: plan.title, category: plan.category, plan, topic }])
-      .select();
+    const results = await sql`
+      INSERT INTO projects (title, category, plan, topic)
+      VALUES (${plan.title}, ${plan.category}, ${JSON.stringify(plan)}, ${topic})
+      RETURNING *
+    `;
 
-    if (error) return { success: false, error: error.message };
-    return { success: true, data: JSON.parse(JSON.stringify(data[0])) };
-  } catch (e: any) {
-    return { success: false, error: e.message };
+    if (!results || results.length === 0) return { success: false, error: "ECHEC_INSERTION_NEON" };
+    return { success: true, data: JSON.parse(JSON.stringify(results[0])) };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "ECHEC_SAVE";
+    return { success: false, error: message };
   }
 }
 
 export async function getProjects() {
   try {
-    const { data, error } = await supabase.from("projects").select("*").order("created_at", { ascending: false });
-    if (error) return [];
-    return JSON.parse(JSON.stringify(data || []));
-  } catch (e) {
+    const results = await sql`SELECT * FROM projects ORDER BY created_at DESC`;
+    return JSON.parse(JSON.stringify(results || []));
+  } catch (error: unknown) {
+    console.error("Erreur de récupération des projets :", error);
     return [];
   }
 }
@@ -112,7 +142,7 @@ export async function getQuota() {
     const response = await fetch("https://api.elevenlabs.io/v1/user/subscription", { headers: { "xi-api-key": apiKey } });
     const data = await response.json();
     return { remaining: data.character_limit - data.character_count, total: data.character_limit };
-  } catch (e) {
+  } catch (error: unknown) {
     return null;
   }
 }
