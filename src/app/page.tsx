@@ -397,7 +397,7 @@ export default function Home() {
     return runScene(uid, "video", async () => {
       const start = await startVideoJob({ modelId: videoModelId, prompt: scene.visualPrompt, imageUrl: scene.imageUrl, ratio, duration: scene.duration, quality: videoQuality });
       if (!start.success) return { error: start.error };
-      setNotes((n) => ({ ...n, [uid]: { text: "Plan vidéo en cours de génération (1 à 3 minutes)…", error: false } }));
+      setNotes((n) => ({ ...n, [uid]: { text: "Plan vidéo en cours de génération (de 30 secondes à 5 minutes selon le moteur)…", error: false } }));
       for (let attempt = 0; attempt < 150 && alive.current; attempt++) {
         await sleep(4000);
         const status = await checkVideoJob(start.id);
