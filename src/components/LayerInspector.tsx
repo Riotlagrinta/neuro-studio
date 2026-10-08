@@ -1,6 +1,6 @@
 "use client";
 
-import { Circle, Image as ImageIcon, Square, Trash2, Type } from "lucide-react";
+import { Captions, Circle, Image as ImageIcon, Square, Trash2, Type } from "lucide-react";
 import type { FontFamily, Layer, Reveal } from "@/lib/motion/types";
 
 interface Props {
@@ -33,6 +33,7 @@ const TITLES: Record<Layer["type"], { label: string; icon: React.ReactNode }> = 
   rect: { label: "Forme", icon: <Square className="h-3.5 w-3.5" /> },
   ellipse: { label: "Cercle", icon: <Circle className="h-3.5 w-3.5" /> },
   media: { label: "Fond IA", icon: <ImageIcon className="h-3.5 w-3.5" /> },
+  captions: { label: "Sous-titres", icon: <Captions className="h-3.5 w-3.5" /> },
 };
 
 const field = "w-full rounded-md border border-line-2 bg-ink px-2 py-1.5 text-sm text-cream outline-none focus:border-accent";

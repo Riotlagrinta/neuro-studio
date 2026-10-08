@@ -83,7 +83,30 @@ export interface MediaLayer extends LayerBase {
   anchor: Anchor;
 }
 
-export type Layer = RectLayer | EllipseLayer | TextLayer | MediaLayer;
+export const CAPTION_STYLES = ["karaoke", "pop", "box", "outline"] as const;
+export type CaptionStyle = (typeof CAPTION_STYLES)[number];
+
+/**
+ * Animated subtitles: the words of `text` appear one after another across the layer's visible window
+ * (spread in proportion to word length), the current word being highlighted.
+ */
+export interface CaptionsLayer extends LayerBase {
+  type: "captions";
+  text: string;
+  style: CaptionStyle;
+  size: number;
+  weight: number;
+  font: FontFamily;
+  /** Colour of the words. */
+  color: string;
+  /** Colour of the word being said (karaoke / pop) or of the box (box). */
+  highlight: string;
+  uppercase: boolean;
+  maxWidth: number;
+  lineHeight: number;
+}
+
+export type Layer = RectLayer | EllipseLayer | TextLayer | MediaLayer | CaptionsLayer;
 
 export type Background =
   | { type: "solid"; color: string }
@@ -99,6 +122,9 @@ export interface Transition {
 }
 
 export interface MotionScene {
+  /** Stable identity: survives reordering, duplication keeps the original's and gives the copy a new one. */
+  uid: string;
+  /** Display number (position + 1). Don't use it to identify a scene. */
   id: number;
   voiceOver: string;
   /** English prompt for the AI backdrop (image / video). */
@@ -110,6 +136,22 @@ export interface MotionScene {
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
+  /** Seconds into the narration audio at which this scene starts (> 0 after a scene has been split). */
+  audioOffset?: number;
+  /** Seconds into the video clip at which this scene starts (> 0 after a scene has been split). */
+  mediaOffset?: number;
+}
+
+/** Background music for the whole video: loops until the end, fades, optionally ducks under the narration. */
+export interface Music {
+  url: string;
+  name: string;
+  /** 0–1 */
+  volume: number;
+  fadeIn: number;
+  fadeOut: number;
+  /** Lower the music while a scene's narration is playing. */
+  duck: boolean;
 }
 
 export interface MotionProject {
@@ -118,6 +160,7 @@ export interface MotionProject {
   ratio: AspectRatio;
   palette: string[];
   scenes: MotionScene[];
+  music?: Music | null;
 }
 
 export function projectDuration(project: MotionProject): number {

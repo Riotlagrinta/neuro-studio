@@ -98,14 +98,15 @@ export default function Home() {
   const hist = useHistory<MotionProject | null>(null);
   const project = hist.present;
   const { reset: resetProject } = hist; // stable across renders, so effects that load a project run once
-  const [selected, setSelected] = useState<{ scene: number; layer: string } | null>(null);
+  const [selected, setSelected] = useState<{ scene: string; layer: string } | null>(null); // scene = its uid
   const [topic, setTopic] = useState("");
   const [caps, setCaps] = useState<StudioCapabilities | null>(null);
   const [generating, setGenerating] = useState(false);
   const [stage, setStage] = useState(0);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<Record<number, BusyKind | undefined>>({});
-  const [notes, setNotes] = useState<Record<number, Note | undefined>>({});
+  // Per-scene state is keyed by the scene's uid, not its position: reordering mid-generation must not mix scenes up.
+  const [busy, setBusy] = useState<Record<string, BusyKind | undefined>>({});
+  const [notes, setNotes] = useState<Record<string, Note | undefined>>({});
   const [bulk, setBulk] = useState<"voice" | "image" | null>(null);
   const [voice, setVoice] = useState<{ provider: VoiceProviderId; voiceId: string }>({ provider: "elevenlabs", voiceId: "" });
   const [videoModelId, setVideoModelId] = useState("seedance");
@@ -241,7 +242,11 @@ export default function Home() {
   /** An edit: one undo step (edits sharing a `key` within a moment merge, e.g. typing). */
   const patchScene = (index: number, update: (scene: MotionScene) => MotionScene, key?: string) => hist.set((p) => withScene(p, index, update), key);
   /** A generated asset (voice, image, video): applied to every undo step, so undo can't take a paid result away. */
-  const patchAssets = (index: number, update: (scene: MotionScene) => MotionScene) => hist.patchAll((p) => withScene(p, index, update));
+  const withSceneUid = (p: MotionProject | null, uid: string, update: (scene: MotionScene) => MotionScene) => {
+    const index = p ? p.scenes.findIndex((s) => s.uid === uid) : -1;
+    return index < 0 ? p : withScene(p, index, update); // the scene may have been deleted while it was generating
+  };
+  const patchAssets = (uid: string, update: (scene: MotionScene) => MotionScene) => hist.patchAll((p) => withSceneUid(p, uid, update));
 
   const handleSave = async () => {
     if (!project) return;
@@ -288,58 +293,60 @@ export default function Home() {
 
   // ---- per-scene generation ----
 
-  const runScene = async (index: number, kind: BusyKind, job: () => Promise<{ error?: string }>) => {
-    setBusy((b) => ({ ...b, [index]: kind }));
-    setNotes((n) => ({ ...n, [index]: undefined }));
+  const runScene = async (uid: string, kind: BusyKind, job: () => Promise<{ error?: string }>) => {
+    setBusy((b) => ({ ...b, [uid]: kind }));
+    setNotes((n) => ({ ...n, [uid]: undefined }));
     try {
       const { error: code } = await job();
-      if (alive.current) setNotes((n) => ({ ...n, [index]: code ? { text: explain(code), error: true } : undefined }));
+      if (alive.current) setNotes((n) => ({ ...n, [uid]: code ? { text: explain(code), error: true } : undefined }));
     } catch {
-      if (alive.current) setNotes((n) => ({ ...n, [index]: { text: "Connexion au serveur interrompue.", error: true } }));
+      if (alive.current) setNotes((n) => ({ ...n, [uid]: { text: "Connexion au serveur interrompue.", error: true } }));
     } finally {
-      if (alive.current) setBusy((b) => ({ ...b, [index]: undefined }));
+      if (alive.current) setBusy((b) => ({ ...b, [uid]: undefined }));
     }
   };
 
-  const makeVoice = (index: number) => {
-    if (!project) return Promise.resolve();
-    const scene = project.scenes[index];
-    return runScene(index, "voice", async () => {
+  const sceneOf = (uid: string) => project?.scenes.find((s) => s.uid === uid);
+
+  const makeVoice = (uid: string) => {
+    const scene = sceneOf(uid);
+    if (!scene) return Promise.resolve();
+    return runScene(uid, "voice", async () => {
       const result = await synthesizeVoice(scene.voiceOver, voice.provider, voice.voiceId);
       if (!result.success) return { error: result.error };
       const seconds = result.duration ?? (await audioDuration(result.url));
       // The narration drives the scene length.
-      patchAssets(index, (s) => ({ ...s, audioUrl: result.url, ...(seconds ? { duration: fitDuration(seconds) } : {}) }));
+      patchAssets(uid, (s) => ({ ...s, audioUrl: result.url, ...(seconds ? { duration: fitDuration(seconds) } : {}) }));
       return {};
     });
   };
 
-  const makeImage = (index: number) => {
-    if (!project) return Promise.resolve();
+  const makeImage = (uid: string) => {
+    const scene = sceneOf(uid);
+    if (!project || !scene) return Promise.resolve();
     const { ratio } = project;
-    const scene = project.scenes[index];
-    return runScene(index, "image", async () => {
+    return runScene(uid, "image", async () => {
       const result = await generateImage(scene.visualPrompt, ratio);
       if (!result.success) return { error: result.error };
-      patchAssets(index, (s) => ensureMediaLayer({ ...s, imageUrl: result.url }, ratio));
+      patchAssets(uid, (s) => ensureMediaLayer({ ...s, imageUrl: result.url }, ratio));
       return {};
     });
   };
 
-  const makeVideo = (index: number) => {
-    if (!project) return Promise.resolve();
+  const makeVideo = (uid: string) => {
+    const scene = sceneOf(uid);
+    if (!project || !scene) return Promise.resolve();
     const { ratio } = project;
-    const scene = project.scenes[index];
-    return runScene(index, "video", async () => {
+    return runScene(uid, "video", async () => {
       const start = await startVideoJob({ modelId: videoModelId, prompt: scene.visualPrompt, imageUrl: scene.imageUrl, ratio, duration: scene.duration, quality: videoQuality });
       if (!start.success) return { error: start.error };
-      setNotes((n) => ({ ...n, [index]: { text: "Plan vidéo en cours de génération (1 à 3 minutes)…", error: false } }));
+      setNotes((n) => ({ ...n, [uid]: { text: "Plan vidéo en cours de génération (1 à 3 minutes)…", error: false } }));
       for (let attempt = 0; attempt < 150 && alive.current; attempt++) {
         await sleep(4000);
         const status = await checkVideoJob(start.id);
         if (!status.success) return { error: status.error };
         if (status.status === "succeeded") {
-          patchAssets(index, (s) => ensureMediaLayer({ ...s, videoUrl: status.url }, ratio));
+          patchAssets(uid, (s) => ensureMediaLayer({ ...s, videoUrl: status.url }, ratio));
           return {};
         }
       }
@@ -347,13 +354,14 @@ export default function Home() {
     });
   };
 
-  const refine = (index: number, instruction: string) => {
-    if (!project) return Promise.resolve();
+  const refine = (uid: string, instruction: string) => {
+    const scene = sceneOf(uid);
+    if (!project || !scene) return Promise.resolve();
     const { title, palette, ratio, scenes } = project;
-    return runScene(index, "refine", async () => {
-      const result = await refineMotionScene({ title, palette, ratio, index, total: scenes.length, scene: scenes[index], instruction });
+    return runScene(uid, "refine", async () => {
+      const result = await refineMotionScene({ title, palette, ratio, index: scenes.indexOf(scene), total: scenes.length, scene, instruction });
       if (!result.success) return { error: result.error };
-      patchScene(index, () => result.data);
+      hist.set((p) => withSceneUid(p, uid, () => result.data)); // an edit: one undo step
       return {};
     });
   };
@@ -361,10 +369,10 @@ export default function Home() {
   const generateAll = async (kind: "voice" | "image") => {
     if (!project) return;
     setBulk(kind);
-    for (let i = 0; i < project.scenes.length && alive.current; i++) {
-      const scene = project.scenes[i];
-      if (kind === "voice" && !scene.audioUrl && scene.voiceOver.trim()) await makeVoice(i);
-      if (kind === "image" && !scene.imageUrl && scene.visualPrompt.trim()) await makeImage(i);
+    for (const scene of project.scenes) {
+      if (!alive.current) break;
+      if (kind === "voice" && !scene.audioUrl && scene.voiceOver.trim()) await makeVoice(scene.uid);
+      if (kind === "image" && !scene.imageUrl && scene.visualPrompt.trim()) await makeImage(scene.uid);
     }
     if (alive.current) setBulk(null);
   };
@@ -374,7 +382,7 @@ export default function Home() {
   const scene = project?.scenes[Math.min(activeScene, (project?.scenes.length ?? 1) - 1)];
   const sceneIndex = project ? Math.min(activeScene, project.scenes.length - 1) : 0;
 
-  const selectedLayer = scene && selected && selected.scene === sceneIndex ? (scene.layers.find((l) => l.id === selected.layer) ?? null) : null;
+  const selectedLayer = scene && selected && selected.scene === scene.uid ? (scene.layers.find((l) => l.id === selected.layer) ?? null) : null;
   const editLayer = (patch: Record<string, unknown>, key: string) =>
     selectedLayer && patchScene(sceneIndex, (s) => updateLayer(s, selectedLayer.id, patch), `layer-${selectedLayer.id}-${key}`);
   const trimSelected = (edge: "start" | "end", t: number) =>
@@ -649,7 +657,7 @@ export default function Home() {
 
               {selectedLayer && (
                 <LayerInspector
-                  key={`${sceneIndex}-${selectedLayer.id}`}
+                  key={`${scene.uid}-${selectedLayer.id}`}
                   layer={selectedLayer}
                   sceneDuration={scene.duration}
                   canDelete={scene.layers.length > 1}
@@ -660,12 +668,12 @@ export default function Home() {
               )}
 
               <SceneCard
-                key={scene.id}
+                key={scene.uid}
                 scene={scene}
                 index={sceneIndex}
                 total={project.scenes.length}
-                busy={busy[sceneIndex]}
-                note={notes[sceneIndex]}
+                busy={busy[scene.uid]}
+                note={notes[scene.uid]}
                 voiceReady={voiceReady}
                 imageReady={canUse}
                 videoReady={canUse && !!caps?.videoAvailable}
@@ -673,10 +681,10 @@ export default function Home() {
                 motionReady={motionReady}
                 estimates={{ voice: formatUsd(voiceEstimate(scene)), image: formatUsd(0), video: formatUsd(videoEstimate(scene)) }}
                 onChange={(patch) => patchScene(sceneIndex, (s) => ({ ...s, ...patch }), `scene-${sceneIndex}-${Object.keys(patch).join(",")}`)}
-                onVoice={() => makeVoice(sceneIndex)}
-                onImage={() => makeImage(sceneIndex)}
-                onVideo={() => makeVideo(sceneIndex)}
-                onRefine={(instruction) => refine(sceneIndex, instruction)}
+                onVoice={() => makeVoice(scene.uid)}
+                onImage={() => makeImage(scene.uid)}
+                onVideo={() => makeVideo(scene.uid)}
+                onRefine={(instruction) => refine(scene.uid, instruction)}
               />
             </aside>
           </div>
@@ -688,7 +696,7 @@ export default function Home() {
               activeScene={sceneIndex}
               selectedLayerId={selectedLayer?.id ?? null}
               onSeek={(t) => playerRef.current?.seek(t)}
-              onSelectLayer={(id) => setSelected(id ? { scene: sceneIndex, layer: id } : null)}
+              onSelectLayer={(id) => setSelected(id ? { scene: scene.uid, layer: id } : null)}
               onEditStart={hist.begin}
               onEdit={hist.update}
               onEditEnd={hist.end}

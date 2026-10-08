@@ -153,10 +153,13 @@ export async function refineMotionScene(input: RefineInput) {
     const sameVoice = revised.voiceOver === current.voiceOver;
     const scene: MotionScene = {
       ...revised,
+      uid: current.uid, // a retouch is still the same scene
       duration: sameVoice && current.audioUrl ? current.duration : revised.duration,
       imageUrl: current.imageUrl,
       videoUrl: current.videoUrl,
       audioUrl: sameVoice ? current.audioUrl : undefined,
+      audioOffset: sameVoice ? current.audioOffset : undefined,
+      mediaOffset: current.videoUrl ? current.mediaOffset : undefined,
     };
     return { success: true as const, data: clean(scene) };
   } catch {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type Ref } from "react";
-import { Circle, Image as ImageIcon, Square, Type } from "lucide-react";
+import { Captions, Circle, Image as ImageIcon, Square, Type } from "lucide-react";
 import clsx from "clsx";
 import { keyTimes, layerEnd, moveKeyframes, moveLayer, setSceneDuration, snapToFrame, snapToTenth, trimLayer } from "@/lib/motion/edit";
 import { clock } from "@/lib/motion/timecode";
@@ -46,6 +46,8 @@ function layerLabel(layer: Layer): { icon: ReactNode; text: string; color: strin
       return { icon: <Circle className="h-3 w-3" />, text: "Cercle", color: "#f472b6" };
     case "media":
       return { icon: <ImageIcon className="h-3 w-3" />, text: "Fond IA", color: "#38bdf8" };
+    case "captions":
+      return { icon: <Captions className="h-3 w-3" />, text: "Sous-titres", color: "#fbbf24" };
   }
 }
 
@@ -234,7 +236,7 @@ export default function Timeline({ project, activeScene, selectedLayerId, onSeek
               const overlap = i > 0 && s.transition.type !== "none" ? Math.min(s.transition.duration * pps, s.duration * pps) : 0;
               return (
                 <div
-                  key={s.id}
+                  key={s.uid}
                   className={clsx("absolute bottom-1 top-1 rounded-md border", i === activeScene ? "ring-1 ring-white/70" : "")}
                   style={{ left, width: Math.max(8, s.duration * pps - 2), background: `${color}33`, borderColor: `${color}aa` }}
                 >
@@ -269,12 +271,12 @@ export default function Timeline({ project, activeScene, selectedLayerId, onSeek
               const width = Math.max(8, s.duration * pps - 2);
               return s.audioUrl ? (
                 <div
-                  key={s.id}
+                  key={s.uid}
                   className="absolute bottom-1 top-1 rounded-sm border border-mint/50"
                   style={{ left, width, background: "repeating-linear-gradient(90deg, rgba(52,211,153,0.55) 0 2px, rgba(52,211,153,0.15) 2px 4px)" }}
                 />
               ) : (
-                <div key={s.id} className="absolute bottom-1.5 top-1.5 rounded-sm border border-dashed border-line-2" style={{ left, width }} />
+                <div key={s.uid} className="absolute bottom-1.5 top-1.5 rounded-sm border border-dashed border-line-2" style={{ left, width }} />
               );
             })}
           </Row>
@@ -287,14 +289,14 @@ export default function Timeline({ project, activeScene, selectedLayerId, onSeek
               const kind = s.videoUrl ? "vidéo" : s.imageUrl ? "image" : null;
               return kind ? (
                 <div
-                  key={s.id}
+                  key={s.uid}
                   className={clsx("absolute bottom-1 top-1 overflow-hidden rounded-sm border px-2 font-mono text-[9px] uppercase leading-[16px]", s.videoUrl ? "border-amber/60 bg-amber/25 text-amber" : "border-sky/60 bg-sky/20 text-sky")}
                   style={{ left, width }}
                 >
                   {kind}
                 </div>
               ) : (
-                <div key={s.id} className="absolute bottom-1.5 top-1.5 rounded-sm border border-dashed border-line-2" style={{ left, width }} />
+                <div key={s.uid} className="absolute bottom-1.5 top-1.5 rounded-sm border border-dashed border-line-2" style={{ left, width }} />
               );
             })}
           </Row>

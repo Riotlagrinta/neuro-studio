@@ -3,7 +3,9 @@
 // The renderer relies on these guarantees: finite numbers, bounded ranges,
 // sorted keyframes, whitelisted enums, safe colors and URLs.
 
+import { isUid, newUid } from "./ids";
 import {
+  CAPTION_STYLES,
   EASES,
   FRAMES,
   TRANSITIONS,
@@ -16,6 +18,7 @@ import {
   type Layer,
   type MotionProject,
   type MotionScene,
+  type Music,
   type Reveal,
   type Track,
   type Transition,
@@ -96,7 +99,7 @@ function layer(raw: unknown, index: number, ratio: AspectRatio, sceneDuration: n
   if (!isObj(raw)) return null;
   const { width: W, height: H } = FRAMES[ratio];
   const type = raw.type;
-  if (type !== "rect" && type !== "ellipse" && type !== "text" && type !== "media") return null;
+  if (type !== "rect" && type !== "ellipse" && type !== "text" && type !== "media" && type !== "captions") return null;
 
   const start = num(raw.start, 0, sceneDuration, 0);
   const endRaw = raw.end === undefined || raw.end === null ? null : num(raw.end, 0, MAX_TIME, NaN);
@@ -157,6 +160,26 @@ function layer(raw: unknown, index: number, ratio: AspectRatio, sceneDuration: n
     }
     case "media":
       return { ...base, type, w: track(raw.w, W, 0, 6000), h: track(raw.h, H, 0, 6000), anchor };
+    case "captions": {
+      const text = str(raw.text, 1200);
+      if (!text.trim()) return null;
+      return {
+        ...base,
+        // Subtitles sit low in the frame unless told otherwise.
+        y: track(raw.y, ratio === "16:9" ? H * 0.8 : H * 0.72, -3 * H, 4 * H),
+        type,
+        text,
+        style: oneOf(raw.style, CAPTION_STYLES, "karaoke"),
+        size: num(raw.size, 16, 400, ratio === "16:9" ? 60 : 64),
+        weight: num(raw.weight, 100, 900, 800),
+        font: oneOf<FontFamily>(raw.font, ["sans", "serif", "mono", "display"], "sans"),
+        color: color(raw.color, "#ffffff"),
+        highlight: color(raw.highlight, "#fbbf24"),
+        uppercase: raw.uppercase === true,
+        maxWidth: num(raw.maxWidth, 100, 2 * W, W * 0.8),
+        lineHeight: num(raw.lineHeight, 0.9, 2, 1.25),
+      };
+    }
   }
 }
 
@@ -233,6 +256,8 @@ export function normalizeScene(raw: unknown, index: number, ratio: AspectRatio, 
   if (layers.length === 0) layers = fallbackLayers({ voiceOver, duration }, ratio);
 
   const scene: MotionScene = {
+    // A model can't choose identities; a stored project keeps the ones it was saved with.
+    uid: keepAssets && isUid(r.uid) ? r.uid : newUid(),
     id: index + 1,
     voiceOver,
     visualPrompt: str(r.visualPrompt, 500),
@@ -245,8 +270,26 @@ export function normalizeScene(raw: unknown, index: number, ratio: AspectRatio, 
     scene.imageUrl = url(r.imageUrl);
     scene.videoUrl = url(r.videoUrl);
     scene.audioUrl = url(r.audioUrl);
+    const audioOffset = num(r.audioOffset, 0, 3600, 0);
+    const mediaOffset = num(r.mediaOffset, 0, 3600, 0);
+    if (audioOffset > 0 && scene.audioUrl) scene.audioOffset = audioOffset;
+    if (mediaOffset > 0 && scene.videoUrl) scene.mediaOffset = mediaOffset;
   }
   return scene;
+}
+
+function music(v: unknown): Music | null {
+  if (!isObj(v)) return null;
+  const u = url(v.url);
+  if (!u) return null;
+  return {
+    url: u,
+    name: str(v.name, 120, "Musique"),
+    volume: num(v.volume, 0, 1, 0.6),
+    fadeIn: num(v.fadeIn, 0, 20, 1),
+    fadeOut: num(v.fadeOut, 0, 20, 2),
+    duck: v.duck !== false,
+  };
 }
 
 /**
@@ -267,6 +310,8 @@ export function normalizeProject(raw: unknown, fallbackRatio: AspectRatio, keepA
     ratio,
     palette,
     scenes: rawScenes.map((s, i) => normalizeScene(s, i, ratio, keepAssets)),
+    // Music is an uploaded asset: like the other assets it only comes from stored projects, never from a model.
+    ...(keepAssets && music(raw.music) ? { music: music(raw.music) } : {}),
   };
 }
 

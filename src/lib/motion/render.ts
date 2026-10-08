@@ -1,6 +1,7 @@
 // Canvas renderer: a pure function of (project, time) → pixels.
 // Preview, scrubbing and video export all call renderFrame, so what you see is what you export.
 
+import { drawCaptions } from "./captions";
 import { ease, sample } from "./easing";
 import { FRAMES, locate, type Anchor, type Layer, type MotionProject, type MotionScene, type TextLayer } from "./types";
 
@@ -179,6 +180,9 @@ function drawLayer(
     }
     case "text":
       drawText(ctx, layer, t, fonts);
+      break;
+    case "captions":
+      drawCaptions(ctx, layer, t, fonts);
       break;
   }
   ctx.restore();
