@@ -12,6 +12,9 @@ import { locate, projectDuration, sceneStart, type MotionProject } from "@/lib/m
 export interface MotionPlayerHandle {
   seek(seconds: number): void;
   seekToScene(index: number): void;
+  /** Current playhead time in seconds. */
+  getTime(): number;
+  togglePlay(): void;
 }
 
 interface Props {
@@ -154,19 +157,22 @@ export default function MotionPlayer({ project, onSceneChange, onFrame, variant 
     [draw, syncScene, playing],
   );
 
+  const toggle = () => {
+    if (!playing && timeRef.current >= total - 0.05) seek(0);
+    setPlaying((p) => !p);
+  };
+
   useImperativeHandle(
     ref,
     () => ({
       seek,
       seekToScene: (index: number) => seek(sceneStart(projectRef.current, index)),
+      getTime: () => timeRef.current,
+      togglePlay: toggle,
     }),
-    [seek],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toggle only reads state already listed through seek/playing/total
+    [seek, playing, total],
   );
-
-  const toggle = () => {
-    if (!playing && timeRef.current >= total - 0.05) seek(0);
-    setPlaying((p) => !p);
-  };
 
   const step = (direction: 1 | -1) => {
     const current = locate(projectRef.current, timeRef.current).index;

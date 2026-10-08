@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { CheckCircle2, FileDown, History, Loader2, Save, Video } from "lucide-react";
+import { CheckCircle2, FileDown, History, Loader2, Redo2, Save, Undo2, Video } from "lucide-react";
 import Link from "next/link";
 import {
   checkVideoJob,
@@ -19,6 +19,7 @@ import {
 } from "./actions";
 import AccountMenu from "@/components/AccountMenu";
 import BriefForm, { type Gate } from "@/components/BriefForm";
+import LayerInspector from "@/components/LayerInspector";
 import GeneratingTimeline from "@/components/GeneratingTimeline";
 import { HeroReel, KineticTitle, SweepRuler } from "@/components/Hero";
 import MotionPlayer, { type MotionPlayerHandle } from "@/components/MotionPlayer";
@@ -27,10 +28,12 @@ import Timeline, { type TimelineHandle } from "@/components/Timeline";
 import { explain } from "@/lib/errors";
 import { EXPORT_QUALITIES, exportProjectToWebm, type ExportQuality } from "@/lib/motion/export";
 import { buildSampleProject } from "@/lib/motion/sample";
+import { deleteLayer, trimLayer, updateLayer } from "@/lib/motion/edit";
 import { ensureMediaLayer } from "@/lib/motion/sanitize";
 import { projectDuration, type AspectRatio, type MotionProject, type MotionScene } from "@/lib/motion/types";
 import { formatUsd, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { exportScriptPdf } from "@/lib/script-pdf";
+import { useHistory } from "@/lib/useHistory";
 import { getVideoModel, QUALITY_LABELS, videoCost, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import type { VoiceProviderId } from "@/lib/voice-providers";
 
@@ -91,7 +94,11 @@ function LogoMark() {
 }
 
 export default function Home() {
-  const [project, setProject] = useState<MotionProject | null>(null);
+  // The project lives in an undo/redo history: every edit is a step, a drag is one step.
+  const hist = useHistory<MotionProject | null>(null);
+  const project = hist.present;
+  const { reset: resetProject } = hist; // stable across renders, so effects that load a project run once
+  const [selected, setSelected] = useState<{ scene: number; layer: string } | null>(null);
   const [topic, setTopic] = useState("");
   const [caps, setCaps] = useState<StudioCapabilities | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -106,7 +113,9 @@ export default function Home() {
   const [exportQuality, setExportQuality] = useState<ExportQuality>("720p");
   const [activeScene, setActiveScene] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [savedProject, setSavedProject] = useState<MotionProject | null>(null);
+  // "Saved" means: what is on screen is exactly what was last saved (so undoing back to it counts too).
+  const saved = !!project && project === savedProject;
   const [pdfBusy, setPdfBusy] = useState(false);
   const [exportPct, setExportPct] = useState<number | null>(null);
 
@@ -140,7 +149,7 @@ export default function Home() {
       getProject(id).then((r) => {
         if (!alive.current) return;
         if (r.success) {
-          setProject(r.data);
+          resetProject(r.data);
           setTopic(r.topic);
         } else {
           setError(explain(r.error));
@@ -150,7 +159,7 @@ export default function Home() {
     return () => {
       alive.current = false;
     };
-  }, []);
+  }, [resetProject]);
 
   // Opening a project replaces the whole page: start at the top, not where the landing page was scrolled.
   const hasProject = !!project;
@@ -191,7 +200,9 @@ export default function Home() {
     try {
       const result = await generateMotionProject(input);
       if (result.success) {
-        setProject(result.data);
+        hist.reset(result.data);
+        setSavedProject(null);
+        setSelected(null);
         setTopic(input.topic);
         setActiveScene(0);
       } else {
@@ -207,21 +218,30 @@ export default function Home() {
   const openDemo = (ratio: AspectRatio) => {
     setError("");
     setTopic("Démo");
-    setProject(buildSampleProject(ratio));
+    hist.reset(buildSampleProject(ratio));
+    setSavedProject(null);
+    setSelected(null);
     setActiveScene(0);
   };
 
   const closeProject = () => {
-    setProject(null);
+    hist.reset(null);
+    setSelected(null);
     setBusy({});
     setNotes({});
-    setSaved(false);
+    setSavedProject(null);
   };
 
-  const patchScene = (index: number, update: (scene: MotionScene) => MotionScene) => {
-    setSaved(false);
-    setProject((p) => (p ? { ...p, scenes: p.scenes.map((s, i) => (i === index ? update(s) : s)) } : p));
+  const withScene = (p: MotionProject | null, index: number, update: (scene: MotionScene) => MotionScene) => {
+    if (!p) return p;
+    const current = p.scenes[index];
+    const next = update(current);
+    return next === current ? p : { ...p, scenes: p.scenes.map((s, i) => (i === index ? next : s)) };
   };
+  /** An edit: one undo step (edits sharing a `key` within a moment merge, e.g. typing). */
+  const patchScene = (index: number, update: (scene: MotionScene) => MotionScene, key?: string) => hist.set((p) => withScene(p, index, update), key);
+  /** A generated asset (voice, image, video): applied to every undo step, so undo can't take a paid result away. */
+  const patchAssets = (index: number, update: (scene: MotionScene) => MotionScene) => hist.patchAll((p) => withScene(p, index, update));
 
   const handleSave = async () => {
     if (!project) return;
@@ -229,7 +249,7 @@ export default function Home() {
     try {
       const result = await saveProject(topic, project);
       if (result.success) {
-        setSaved(true);
+        setSavedProject(project);
         setError("");
       } else {
         setError(explain(result.error));
@@ -289,7 +309,7 @@ export default function Home() {
       if (!result.success) return { error: result.error };
       const seconds = result.duration ?? (await audioDuration(result.url));
       // The narration drives the scene length.
-      patchScene(index, (s) => ({ ...s, audioUrl: result.url, ...(seconds ? { duration: fitDuration(seconds) } : {}) }));
+      patchAssets(index, (s) => ({ ...s, audioUrl: result.url, ...(seconds ? { duration: fitDuration(seconds) } : {}) }));
       return {};
     });
   };
@@ -301,7 +321,7 @@ export default function Home() {
     return runScene(index, "image", async () => {
       const result = await generateImage(scene.visualPrompt, ratio);
       if (!result.success) return { error: result.error };
-      patchScene(index, (s) => ensureMediaLayer({ ...s, imageUrl: result.url }, ratio));
+      patchAssets(index, (s) => ensureMediaLayer({ ...s, imageUrl: result.url }, ratio));
       return {};
     });
   };
@@ -319,7 +339,7 @@ export default function Home() {
         const status = await checkVideoJob(start.id);
         if (!status.success) return { error: status.error };
         if (status.status === "succeeded") {
-          patchScene(index, (s) => ensureMediaLayer({ ...s, videoUrl: status.url }, ratio));
+          patchAssets(index, (s) => ensureMediaLayer({ ...s, videoUrl: status.url }, ratio));
           return {};
         }
       }
@@ -353,6 +373,56 @@ export default function Home() {
 
   const scene = project?.scenes[Math.min(activeScene, (project?.scenes.length ?? 1) - 1)];
   const sceneIndex = project ? Math.min(activeScene, project.scenes.length - 1) : 0;
+
+  const selectedLayer = scene && selected && selected.scene === sceneIndex ? (scene.layers.find((l) => l.id === selected.layer) ?? null) : null;
+  const editLayer = (patch: Record<string, unknown>, key: string) =>
+    selectedLayer && patchScene(sceneIndex, (s) => updateLayer(s, selectedLayer.id, patch), `layer-${selectedLayer.id}-${key}`);
+  const trimSelected = (edge: "start" | "end", t: number) =>
+    selectedLayer && patchScene(sceneIndex, (s) => trimLayer(s, selectedLayer.id, edge, t), `trim-${selectedLayer.id}-${edge}`);
+  const removeSelected = () => {
+    if (!selectedLayer) return;
+    patchScene(sceneIndex, (s) => deleteLayer(s, selectedLayer.id));
+    setSelected(null);
+  };
+
+  // Keyboard: Ctrl/Cmd+Z undo, +Shift (or Y) redo, Space play, ←/→ one frame (Shift: one second), Delete the layer, Esc deselect.
+  // Ignored while typing in a field. The handler is swapped every render so it always sees the current state.
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    onKeyRef.current = (e) => {
+      if (!project) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el?.isContentEditable;
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (mod && (key === "z" || key === "y") && !typing) {
+        e.preventDefault();
+        if (key === "y" || e.shiftKey) hist.redo();
+        else hist.undo();
+        return;
+      }
+      if (typing || mod || e.altKey) return;
+      const player = playerRef.current;
+      if (e.code === "Space" && tag !== "BUTTON") {
+        e.preventDefault();
+        player?.togglePlay();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        if (player) player.seek(player.getTime() + (e.shiftKey ? 1 : 1 / 30) * (e.key === "ArrowLeft" ? -1 : 1));
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedLayer) {
+        e.preventDefault();
+        removeSelected();
+      } else if (e.key === "Escape") {
+        setSelected(null);
+      }
+    };
+  });
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onKeyRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Estimated prices, shown before anyone spends (same numbers as the per-user caps).
   const videoEstimate = (s: MotionScene) =>
@@ -437,10 +507,7 @@ export default function Home() {
               <span className="label rounded bg-accent/15 px-2 py-1 text-indigo-300">{project.category}</span>
               <input
                 value={project.title}
-                onChange={(e) => {
-                  setSaved(false);
-                  setProject({ ...project, title: e.target.value });
-                }}
+                onChange={(e) => hist.set((p) => (p ? { ...p, title: e.target.value } : p), "title")}
                 aria-label="Titre du projet"
                 className="min-w-0 flex-1 border-b border-transparent bg-transparent text-lg font-semibold outline-none transition-colors focus:border-pink/50"
               />
@@ -449,6 +516,14 @@ export default function Home() {
               {project.ratio} · {projectDuration(project).toFixed(1)} s · {project.scenes.length} scènes
             </span>
             <div className="flex flex-wrap gap-2">
+              <div className="flex gap-1">
+                <button onClick={hist.undo} disabled={!hist.canUndo} aria-label="Annuler" title="Annuler (Ctrl+Z)" className={`${toolButton} px-2.5`}>
+                  <Undo2 className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={hist.redo} disabled={!hist.canRedo} aria-label="Rétablir" title="Rétablir (Ctrl+Maj+Z)" className={`${toolButton} px-2.5`}>
+                  <Redo2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
               <button onClick={handleSave} disabled={saving || !canUse} title={canUse ? undefined : "Connectez-vous pour sauvegarder"} className={toolButton}>
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : saved ? <CheckCircle2 className="h-3.5 w-3.5 text-mint" /> : <Save className="h-3.5 w-3.5" />}
                 {saved ? "Enregistré" : "Sauvegarder"}
@@ -572,6 +647,18 @@ export default function Home() {
                 {canUse && !caps?.videoAvailable && <p className="font-mono text-[10px] text-zinc-600">REPLICATE_API_TOKEN manquant : plans vidéo IA désactivés.</p>}
               </section>
 
+              {selectedLayer && (
+                <LayerInspector
+                  key={`${sceneIndex}-${selectedLayer.id}`}
+                  layer={selectedLayer}
+                  sceneDuration={scene.duration}
+                  canDelete={scene.layers.length > 1}
+                  onChange={editLayer}
+                  onTrim={trimSelected}
+                  onDelete={removeSelected}
+                />
+              )}
+
               <SceneCard
                 key={scene.id}
                 scene={scene}
@@ -585,7 +672,7 @@ export default function Home() {
                 videoBlocked={!!videoModel?.needsImage && !scene.imageUrl}
                 motionReady={motionReady}
                 estimates={{ voice: formatUsd(voiceEstimate(scene)), image: formatUsd(0), video: formatUsd(videoEstimate(scene)) }}
-                onChange={(patch) => patchScene(sceneIndex, (s) => ({ ...s, ...patch }))}
+                onChange={(patch) => patchScene(sceneIndex, (s) => ({ ...s, ...patch }), `scene-${sceneIndex}-${Object.keys(patch).join(",")}`)}
                 onVoice={() => makeVoice(sceneIndex)}
                 onImage={() => makeImage(sceneIndex)}
                 onVideo={() => makeVideo(sceneIndex)}
@@ -595,7 +682,17 @@ export default function Home() {
           </div>
 
           <div className="px-4 pb-4">
-            <Timeline ref={timelineRef} project={project} activeScene={sceneIndex} onSeek={(t) => playerRef.current?.seek(t)} />
+            <Timeline
+              ref={timelineRef}
+              project={project}
+              activeScene={sceneIndex}
+              selectedLayerId={selectedLayer?.id ?? null}
+              onSeek={(t) => playerRef.current?.seek(t)}
+              onSelectLayer={(id) => setSelected(id ? { scene: sceneIndex, layer: id } : null)}
+              onEditStart={hist.begin}
+              onEdit={hist.update}
+              onEditEnd={hist.end}
+            />
           </div>
         </div>
       )}

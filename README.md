@@ -2,7 +2,32 @@
 
 **NeuroStudio** est un studio de motion design assisté par IA. Vous décrivez une vidéo ; **Claude Opus** la met en scène (titres animés, formes, transitions, narration), des **voix IA** la racontent, et des **modèles vidéo IA** peuvent générer des plans de fond pour chaque scène. Le résultat s'exporte en vidéo.
 
-L'interface est celle d'un outil de motion design : moniteur avec timecode, **timeline** (scènes, voix, médias, calques et keyframes), inspecteur de scène, zones de sécurité, lecture en boucle.
+L'interface est celle d'un outil de motion design : moniteur avec timecode, **timeline interactive** (scènes, voix, médias, calques et keyframes), inspecteur de scène et de calque, zones de sécurité, lecture en boucle, annuler/rétablir.
+
+## Montage
+
+Tout ce que Claude a généré se retouche à la main, sur la timeline :
+
+| Geste | Effet |
+|---|---|
+| Cliquer / glisser dans la règle | place la tête de lecture |
+| Cliquer une barre de calque | la sélectionne et ouvre l'**inspecteur de calque** |
+| Glisser une barre | déplace le calque *avec tous ses keyframes* |
+| Glisser le bord d'une barre | rogne le début ou la fin |
+| Glisser un losange ◆ | décale cette pose dans le temps |
+| Glisser le bord d'une scène | change sa durée (les scènes suivantes se décalent) |
+| Inspecteur de calque | texte, taille, police, couleur, effet d'apparition (fondu, mot par mot, lettre par lettre, machine à écrire), début/fin, suppression |
+
+Les déplacements s'alignent sur les images (1/30 s). **Un glissement entier = un seul pas d'annulation**, et la frappe dans un champ est regroupée. Les voix, images et vidéos générées (payantes) ne sont **jamais** retirées par « Annuler ».
+
+| Raccourci | Action |
+|---|---|
+| `Ctrl/Cmd + Z` · `Ctrl/Cmd + Maj + Z` (ou `Y`) | annuler · rétablir |
+| `Espace` | lecture / pause |
+| `←` `→` (avec `Maj`) | une image (une seconde) |
+| `Suppr` · `Échap` | supprimer le calque sélectionné · désélectionner |
+
+Le code d'édition est dans `src/lib/motion/edit.ts` (opérations pures, testées) et `src/lib/history.ts` (annuler/rétablir).
 
 ## Comment ça marche
 
@@ -123,6 +148,7 @@ Pour réduire la facture : `MOTION_EFFORT` / `MOTION_MODEL` / `REFINE_*` (voir p
 
 ## Limites connues et prochaines étapes
 
+- **Montage à venir** : réordonner/dupliquer/couper des scènes, ajouter texte et formes à la main, sous-titres animés, musique de fond, import de ses propres médias. Pour l'instant on déplace les poses *dans le temps* ; leurs valeurs (position, échelle) se retouchent par la retouche IA.
 - **Pas encore de paiement.** Prévu : crédits prépayés (mobile money), débit atomique avant chaque action, remboursement en cas d'échec. `usage_events` est la base de ce journal.
 - **Vidéos de plus de 60 s** : non supportées proprement (12 scènes max, `max_tokens` partagé avec la réflexion, 300 s par action serveur). Il faudra générer en deux temps (plan puis scènes).
 - **L'export est enregistré en temps réel** (une vidéo de 30 s prend 30 s) et au format **WebM** ; l'onglet doit rester visible pendant l'export.
