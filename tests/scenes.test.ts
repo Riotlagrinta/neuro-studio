@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { musicGainCurve, narrationIntervals, sceneAudioSchedule } from "../src/lib/motion/audio-mix";
 import { captionTimings } from "../src/lib/motion/captions";
 import { sample } from "../src/lib/motion/easing";
-import { snapToFrame } from "../src/lib/motion/edit";
+import { moveLayer, setSceneDuration, snapToFrame, updateLayer } from "../src/lib/motion/edit";
+import * as H from "../src/lib/history";
 import { buildSampleProject } from "../src/lib/motion/sample";
 import { ensureMediaLayer, normalizeScene } from "../src/lib/motion/sanitize";
 import { addScene, deleteScene, duplicateScene, moveScene, sceneIndexByUid, splitScene } from "../src/lib/motion/scenes";
-import { EASES, FRAMES, projectDuration, type AspectRatio, type Layer, type MotionProject, type MotionScene, type Track } from "../src/lib/motion/types";
+import { EASES, FRAMES, locate, projectDuration, sceneStart, type AspectRatio, type Layer, type MotionProject, type MotionScene, type Track } from "../src/lib/motion/types";
 
 let n = 0, failed = 0;
 const t = (name: string, fn: () => void) => { try { fn(); n++; console.log("  ok -", name); } catch (e) { failed++; console.log("  FAIL -", name, "\n       ", (e as Error).message.replace(/\s+/g, " ").slice(0, 400)); } };
@@ -654,6 +656,444 @@ t("FUZZ: 200 random operations x 6 seeds keep ids 1..n, unique uids, a consisten
     }
   });
   for (const [kind, count] of Object.entries(tally)) assert.ok(count >= 20, `the fuzz exercised ${kind} only ${count} times`);
+});
+
+// =====================================================================================================================
+// Adversarial review. Everything below is checked against references that do not use scenes.ts: the renderer's own
+// visibility rule, plain arrays, brute-force sampling frame by frame.
+// =====================================================================================================================
+console.log("adversarial review");
+
+const choose = <T,>(rnd: () => number, from: readonly T[]): T => from[Math.floor(rnd() * from.length)];
+
+/**
+ * A random but LEGAL scene (it goes through the sanitizer): every layer type, keyframes with every ease, windows that start
+ * or end anywhere (even past the end of the scene), punctuated narration, audio and video assets. Key times strictly
+ * increase: two keys at one instant are a step, and a cut exactly on a step keeps the value before it (see the report).
+ */
+function randomScene(rnd: () => number, index: number): MotionScene {
+  const d = choose(rnd, [1.5, 2, 3.3, 4.5, 6.04, 7.77, 10, 12.34, 20, 40]);
+  const when = () => (rnd() < 0.4 ? Math.round(rnd() * d * 30) / 30 : Math.round(rnd() * d * 1000) / 1000);
+  const track = (lo: number, hi: number) => {
+    if (rnd() < 0.35) return lo + rnd() * (hi - lo);
+    const times = [...new Set(Array.from({ length: 1 + Math.floor(rnd() * 5) }, () => (rnd() < 0.1 ? d * (1 + rnd() * 0.3) : when())))].sort((a, b) => a - b);
+    return times.map((time) => ({ t: time, v: lo + rnd() * (hi - lo), ...(rnd() < 0.8 ? { ease: choose(rnd, EASES) } : {}) }));
+  };
+  const layers = Array.from({ length: Math.floor(rnd() * 9) }, () => {
+    const type = choose(rnd, ["rect", "ellipse", "text", "text", "media", "captions"] as const);
+    const start = rnd() < 0.3 ? 0 : when();
+    const raw: Record<string, unknown> = { type, start, end: rnd() < 0.5 ? null : start + 0.1 + rnd() * d, x: track(0, 1900), y: track(0, 1000), rotation: track(-90, 90), scale: track(0.2, 2), opacity: track(0, 1) };
+    if (type === "rect" || type === "ellipse" || type === "media") Object.assign(raw, { w: track(10, 800), h: track(10, 800) });
+    if (type === "text") Object.assign(raw, { text: `Titre ${index}`, reveal: choose(rnd, ["none", "fade", "words", "chars", "typewriter"]), revealDuration: 0.1 + rnd() * 2 });
+    if (type === "captions") raw.text = "un deux trois, quatre ? cinq ! six sept huit. neuf dix onze douze";
+    return raw;
+  });
+  const narration = Array.from({ length: Math.floor(rnd() * 30) }, (_, k) => `mot${k}${rnd() < 0.2 ? "," : ""}`).join(rnd() < 0.3 ? "  " : " ");
+  return normalizeScene({
+    uid: `random-${index}-${Math.floor(rnd() * 1e9)}`, duration: d, voiceOver: narration, layers,
+    transition: { type: choose(rnd, ["none", "fade", "slide", "zoom", "wipe"]), duration: 0.2 + rnd() * 1.3 },
+    ...(rnd() < 0.5 ? { audioUrl: "https://x.test/a.mp3", audioOffset: rnd() < 0.5 ? Math.round(rnd() * 50) / 10 : undefined } : {}),
+    ...(rnd() < 0.5 ? { videoUrl: "https://x.test/v.mp4", mediaOffset: rnd() < 0.5 ? Math.round(rnd() * 50) / 10 : undefined } : {}),
+  }, index, "16:9", true);
+}
+
+/** The renderer's rule (render.ts drawScene): a layer is drawn from its start to its end, both included. */
+const visibleAt = (s: MotionScene, at: number) => s.layers.filter((l) => !(at < l.start || (l.end !== null && at > l.end)));
+const sceneAt = (scenes: MotionScene[], time: number) => {
+  let acc = 0;
+  for (const s of scenes) {
+    if (time < acc + s.duration) return { scene: s, local: time - acc };
+    acc += s.duration;
+  }
+  throw new Error(`${time} is past the end`);
+};
+const onScreen = (ls: Layer[]) => ls.filter((l) => l.type !== "captions").map((l) => l.id);
+/** What a layer is apart from time: identical on both sides of a cut. */
+const statics = (l: Layer) => {
+  const c = clone(l) as unknown as Record<string, unknown>;
+  for (const key of ["id", "start", "end", "reveal", ...TRACKS]) delete c[key];
+  return c;
+};
+/** Inside the one segment that holds the cut, both halves re-time the original's ease: only there are they not the original. */
+const retimed = (track: Track, cut: number, time: number) => {
+  if (!Array.isArray(track)) return false;
+  const k = track.findIndex((key) => key.t > cut + 1e-6);
+  return k > 0 && track[k - 1].t < cut - 1e-6 && time > track[k - 1].t - 1e-9 && time < track[k].t + 1e-9;
+};
+const words = (text: string) => text.split(/\s+/).filter(Boolean);
+
+t("TIMELINE EQUIVALENCE (brute force): after a cut, every frame shows the same layers, in the same order, with the same values, outside the one re-timed segment", () => {
+  let cuts = 0, compared = 0;
+  for (let seed = 1; seed <= 120; seed++) {
+    const rnd = rng(seed);
+    const scene = deepFreeze(randomScene(rnd, 0));
+    const p = deepFreeze(proj([scene]));
+    const result = splitScene(p, 0, rnd() < 0.5 ? Math.round(rnd() * scene.duration * 30) / 30 : rnd() * scene.duration);
+    if (result === p) continue;
+    cuts++;
+    const [a, b] = result.scenes;
+    const cut = a.duration;
+    for (let time = 0.5 / 30; time < scene.duration; time += 1 / 30) {
+      const before = visibleAt(scene, time);
+      const { scene: half, local } = sceneAt(result.scenes, time);
+      const after = visibleAt(half, local);
+      assert.deepEqual(onScreen(after), onScreen(before), `seed ${seed} @ ${time.toFixed(3)} (cut ${cut.toFixed(3)}): the same layers are on screen`);
+      for (const l of before) {
+        if (l.type === "captions") continue;
+        const twin = after.find((x) => x.id === l.id)!;
+        assert.deepEqual(statics(twin), statics(l), `seed ${seed} ${l.id}: only the timing may change`);
+        for (const [name, track] of tracksOf(l)) {
+          if (retimed(track, cut, time)) continue;
+          const want = sample(track, time);
+          const got = sample(tracksOf(twin).find(([k]) => k === name)![1], local);
+          assert.ok(near(got, want, 1e-6 * Math.max(1, Math.abs(want))), `seed ${seed} @ ${time.toFixed(3)} ${l.id}.${name}: ${got} instead of ${want}`);
+          compared++;
+        }
+      }
+    }
+    // The scalar rules, recomputed from the assignment.
+    assert.ok(near(a.duration + b.duration, scene.duration), `seed ${seed}: durations add up`);
+    assert.equal(a.duration, snapToFrame(a.duration));
+    assert.deepEqual([a.uid, b.uid === scene.uid, b.transition, a.id, b.id], [scene.uid, false, { type: "none", duration: 0.5 }, 1, 2]);
+    const all = words(scene.voiceOver);
+    const k = all.length === 0 ? 0 : Math.min(all.length, Math.max(1, Math.round((all.length * cut) / scene.duration)));
+    assert.deepEqual([words(a.voiceOver), words(b.voiceOver)], [all.slice(0, k), all.slice(k)], `seed ${seed}: narration`);
+    if (scene.audioUrl) assert.deepEqual([a.audioOffset, b.audioOffset], [scene.audioOffset ?? 0, (scene.audioOffset ?? 0) + cut]);
+    else assert.ok(!("audioOffset" in a) && !("audioOffset" in b));
+    if (scene.videoUrl) assert.deepEqual([a.mediaOffset, b.mediaOffset], [scene.mediaOffset, (scene.mediaOffset ?? 0) + cut]);
+    else assert.ok(!("mediaOffset" in a) && !("mediaOffset" in b));
+  }
+  assert.ok(cuts > 60 && compared > 100000, `not vacuous (${cuts} cuts, ${compared} comparisons)`);
+});
+
+t("CHAIN OF CUTS: cutting again and again keeps the layers on screen at every frame, continuous seams, accumulated offsets and a lossless narration", () => {
+  let pieces = 0;
+  for (let seed = 201; seed <= 260; seed++) {
+    const rnd = rng(seed);
+    const scene = randomScene(rnd, 0);
+    let p = deepFreeze(proj([scene]));
+    for (let applied = 0, tries = 0; applied < 4 && tries < 40; tries++) {
+      const i = Math.floor(rnd() * p.scenes.length);
+      const next = splitScene(p, i, rnd() * p.scenes[i].duration);
+      if (next === p) continue;
+      p = deepFreeze(next);
+      applied++;
+    }
+    const parts = p.scenes;
+    if (parts.length < 2) continue;
+    pieces += parts.length;
+    assert.ok(near(projectDuration(p), scene.duration, 1e-9), `seed ${seed}: the video lasts as long`);
+    assert.equal(parts[0].uid, scene.uid);
+    assert.equal(new Set(uids(p)).size, parts.length);
+    assert.ok(parts.every((x) => x.duration >= 0.3 - 1e-6));
+    for (let time = 0.5 / 30; time < scene.duration; time += 1 / 30) {
+      const { scene: part, local } = sceneAt(parts, time);
+      assert.deepEqual(onScreen(visibleAt(part, local)), onScreen(visibleAt(scene, time)), `seed ${seed} @ ${time.toFixed(3)}`);
+    }
+    parts.slice(1).forEach((right, s) => {
+      const left = parts[s];
+      for (const l of right.layers) {
+        const twin = left.layers.find((x) => x.id === l.id);
+        if (!twin) continue;
+        for (const [name, track] of tracksOf(twin)) {
+          const here = sample(track, left.duration);
+          const there = sample(tracksOf(l).find(([k]) => k === name)![1], 0);
+          assert.ok(near(there, here, 1e-9 * Math.max(1, Math.abs(here))), `seed ${seed}: seam ${s}/${s + 1} ${l.id}.${name} jumps from ${here} to ${there}`);
+        }
+      }
+    });
+    let start = 0;
+    for (const part of parts) {
+      if (scene.audioUrl) assert.ok(near(part.audioOffset ?? NaN, (scene.audioOffset ?? 0) + start, 1e-9), `seed ${seed}: audio offset of a piece starting at ${start}`);
+      if (scene.videoUrl && start > 0) assert.ok(near(part.mediaOffset ?? NaN, (scene.mediaOffset ?? 0) + start, 1e-9), `seed ${seed}: video offset`);
+      start += part.duration;
+    }
+    assert.deepEqual(words(parts.map((x) => x.voiceOver).join(" ")), words(scene.voiceOver), `seed ${seed}: narration, in order, nothing lost`);
+  }
+  assert.ok(pieces > 150, `not vacuous (${pieces} pieces)`);
+});
+
+t("RELOAD: what a cut produces is what the sanitizer loads back (windows, keys, reveals, transitions), including halves down to the 0.3 s floor and halves left without layers", () => {
+  const limits = { opacity: [0, 1], scale: [0, 30], w: [0, 6000], h: [0, 6000] } as const;
+  /** Strips what a reload legitimately rewrites: layer ids (renumbered by position), an explicit audioOffset 0, the length of a hard cut, and values pinned by an overshooting ease outside the legal range (the renderer clamps those the same way). */
+  const reloaded = (s: MotionScene) => {
+    const c = clone(s) as any;
+    if (c.audioOffset === 0) delete c.audioOffset;
+    c.duration = Math.max(0.3, c.duration); // a half 1e-16 under the 0.3 s floor loads back at the floor
+    if (c.transition.type === "none") c.transition.duration = 0;
+    for (const l of c.layers) {
+      l.id = "_";
+      for (const [name, [lo, hi]] of Object.entries(limits)) {
+        const track = l[name];
+        if (typeof track === "number") l[name] = Math.min(hi, Math.max(lo, track));
+        else if (Array.isArray(track)) for (const key of track) key.v = Math.min(hi, Math.max(lo, key.v));
+      }
+    }
+    return c;
+  };
+  let checked = 0;
+  for (let seed = 1; seed <= 150; seed++) {
+    const rnd = rng(seed);
+    const scene = randomScene(rnd, 0);
+    const p = proj([scene]);
+    const result = splitScene(p, 0, Math.round(rnd() * scene.duration * 30) / 30);
+    for (const half of result === p ? [] : result.scenes) {
+      assert.deepEqual(reloaded(normalizeScene(clone(half), half.id - 1, "16:9", true)), reloaded(half), `seed ${seed} half ${half.id}`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 150, `not vacuous (${checked} halves)`);
+});
+
+t("captions: hostile punctuation, exotic spaces and emoji never lose, repeat or reorder a character, and a cut never lands inside a word", () => {
+  const TOKENS = ["a", "bb", "ccc", "dddd", "?", "!", ":", "«", "»", "(", ")", "...", ".", ",", "–", "😀", "é", "​", "%", "&", "'", "\"", "Bonjour,", "ça?", "(oui)", "l'idée"];
+  const SPACES = [" ", "  ", "\n", "\t", " ", " ", " \n ", " "];
+  let cut = 0;
+  for (let seed = 1; seed <= 800; seed++) {
+    const rnd = rng(seed);
+    const count = 1 + Math.floor(rnd() * 14);
+    let text = rnd() < 0.2 ? " " : "";
+    for (let i = 0; i < count; i++) text += choose(rnd, TOKENS) + (i < count - 1 || rnd() < 0.3 ? choose(rnd, SPACES) : "");
+    if (!text.trim()) continue;
+    const start = rnd() < 0.5 ? 0 : Math.round(rnd() * 500) / 100;
+    const p = captionScene(text, { start, end: rnd() < 0.5 ? null : start + 0.2 + rnd() * 6 });
+    const at = Math.round((0.3 + rnd() * 9.4) * 30) / 30;
+    const result = splitScene(p, 0, at);
+    if (result === p) continue;
+    const layer = p.scenes[0].layers[0] as any;
+    if (layer.start >= at - 1e-6 || (layer.end !== null && layer.end < at - 1e-6)) continue; // not running at the cut: untouched, checked elsewhere
+    const head = cap(result.scenes[0]).text as string;
+    const tail = (cap(result.scenes[1])?.text ?? "") as string;
+    const whole = text.trim();
+    assert.ok(head.length > 0 && head === head.trim() && tail === tail.trim(), `seed ${seed}: trimmed, head never empty`);
+    assert.ok(whole.startsWith(head) && whole.endsWith(tail) && head.length + tail.length <= whole.length, `seed ${seed}: head is a prefix and tail a suffix of ${JSON.stringify(text)}`);
+    const between = whole.slice(head.length, whole.length - tail.length);
+    assert.ok(/^\s*$/.test(between) && (tail === "" || between !== ""), `seed ${seed}: only blanks between the halves, and at least one: ${JSON.stringify([head, between, tail])}`);
+    cut++;
+  }
+  assert.ok(cut > 400, `not vacuous (${cut} cuts)`);
+});
+
+t("captions: a captions layer without a single word is dropped on both sides rather than crashing or lingering", () => {
+  const p = captionScene("aa bb");
+  const blank = proj([{ ...p.scenes[0], layers: [{ ...(p.scenes[0].layers[0] as any), text: "   " }, ...four().scenes[0].layers] }]);
+  const [a, b] = splitScene(blank, 0, 5).scenes;
+  assert.equal(cap(a), undefined);
+  assert.equal(cap(b), undefined);
+  assert.equal(a.layers.length, 1, "the title is still there");
+});
+
+t("corrupt or extreme input is refused, never turned into two corrupt scenes", () => {
+  const p = four();
+  const withDuration = (duration: number) => proj([{ ...p.scenes[0], duration }, p.scenes[1]]);
+  for (const duration of [NaN, Infinity, -Infinity, 0, -3, 1e-9, 0.5]) {
+    const q = withDuration(duration);
+    assert.equal(splitScene(q, 0, 0.3), q, `duration ${duration}`);
+    assert.equal(splitScene(q, 0, 1), q, `duration ${duration}`);
+  }
+  for (const at of [1e308, Number.MAX_VALUE, 2 ** 53, -1e-9, -0, Number.MIN_VALUE]) assert.equal(splitScene(p, 1, at), p, String(at));
+  assert.equal(moveScene(p, 0, 2 ** 53), p);
+  assert.equal(duplicateScene(p, 1e21), p);
+  assert.equal(addScene(p, Infinity), p);
+  const empty = { ...p, scenes: [] };
+  assert.equal(moveScene(empty, 0, 0), empty);
+  assert.equal(duplicateScene(empty, 0), empty);
+  assert.equal(deleteScene(empty, 0), empty);
+  assert.equal(splitScene(empty, 0, 1), empty);
+  assert.equal(sceneIndexByUid(empty, "x"), -1);
+  const first = addScene(empty, -1);
+  assert.deepEqual([first.scenes.length, first.scenes[0].id, first.scenes[0].duration], [1, 1, 3], "a project with no scene can be started from a blank one");
+  assert.equal(addScene(empty, 0), empty, "afterIndex 0 means after a scene that does not exist");
+});
+
+t("addScene: a dark gradient, a light title, and every field the brief leaves open is the sanitizer's default", () => {
+  const luma = (hex: string) => 0.2126 * parseInt(hex.slice(1, 3), 16) + 0.7152 * parseInt(hex.slice(3, 5), 16) + 0.0722 * parseInt(hex.slice(5, 7), 16);
+  for (const ratio of ["16:9", "9:16"] as const) {
+    const blank = addScene({ ...four(), ratio }, -1).scenes[0];
+    const bg = blank.background;
+    assert.equal(bg.type, "linear");
+    if (bg.type === "linear") assert.ok(luma(bg.from) < 64 && luma(bg.to) < 64, "both stops of the gradient are dark");
+    assert.ok(luma((blank.layers[0] as any).color) > 200, "the title is light");
+    const reference = normalizeScene({ duration: 3, layers: [{ type: "text", text: "Nouvelle scène", size: 96, font: "display", reveal: "words", revealDuration: 0.8 }] }, 0, ratio, true);
+    assert.deepEqual(clone(blank.layers), clone(reference.layers), `${ratio}: the title is exactly what the sanitizer makes of the brief`);
+  }
+});
+
+t("a track that stops exactly on the cut, and layers that need no change, are shared with the original", () => {
+  const p = proj([normalizeScene({ duration: 10, layers: [{ type: "rect", x: [{ t: 0, v: 0 }, { t: 3, v: 100 }] }, { type: "rect", start: 1, end: 2 }] }, 0, "16:9", true)]);
+  const [a] = splitScene(p, 0, 3).scenes;
+  assert.equal(layer(a, "l0").x, (p.scenes[0].layers[0] as any).x, "last key on the cut: the very same track");
+  assert.equal(a.layers[1], p.scenes[0].layers[1], "over before the cut: the very same layer");
+});
+
+t("a key typed a hair off the frame (0.3333333 or 0.3333334 for frame 10) is ON the cut: no phantom key, no near-duplicate key", () => {
+  for (const typed of [0.3333333, 0.3333334]) {
+    const p = proj([normalizeScene({ duration: 5, layers: [{ type: "rect", x: [{ t: typed, v: 5 }, { t: 2, v: 9 }] }] }, 0, "16:9", true)]);
+    const [a, b] = splitScene(p, 0, 10 / 30).scenes;
+    assert.equal(layer(a, "l0").x, 5, `${typed}: the first half stops on that pose, a constant`);
+    const tail = layer(b, "l0").x as { t: number; v: number }[];
+    assert.equal(tail.length, 2, `${typed}: one key at 0 and the next one`);
+    assert.deepEqual([tail[0].t, near(tail[0].v, 5)], [0, true], `${typed}: the pose starts at exactly 0`);
+    assert.ok(near(tail[1].t, 2 - 10 / 30) && tail[1].v === 9);
+  }
+});
+
+t("an explicit end that is the end of the scene, or lies beyond it, becomes open-ended on both sides", () => {
+  const p = proj([normalizeScene({ duration: 10, layers: [{ type: "rect", end: 10 }, { type: "rect", end: 12 }, { type: "rect", end: 7 }] }, 0, "16:9", true)]);
+  const [a, b] = splitScene(p, 0, 3).scenes;
+  assert.deepEqual(a.layers.map((l) => l.end), [null, null, null], "all three run past the cut");
+  assert.deepEqual(b.layers.map((l) => l.end), [null, null, 4], "10 and 12 are 'until the scene ends'; 7 is 4 s into the second half");
+});
+
+t("a duplicate shares its layers with the original, yet nothing done to one reaches the other", () => {
+  const p = deepFreeze(four());
+  const d = deepFreeze(duplicateScene(p, 1));
+  const copy = d.scenes[2];
+  setSceneDuration(copy, 9);
+  moveLayer(copy, copy.layers[0].id, 0.5);
+  updateLayer(copy, copy.layers[0].id, { text: "changed" });
+  const cut = splitScene(d, 2, 1);
+  assert.equal(cut.scenes[1], d.scenes[1], "the original is the very same object after its copy is cut");
+  assert.deepEqual(clone(d.scenes[1]), clone(p.scenes[1]));
+  assert.equal((cut.scenes[1].layers[0] as any).text, "T1");
+});
+
+t("cross-engine (audio-mix): a cut changes nothing the audio plan says: the file plays straight through the seam, one narration interval, the same music ducking", () => {
+  const base = four();
+  const voiced = proj(base.scenes.map((s, i) => (i === 1 || i === 2 ? { ...s, audioUrl: `https://x.test/a${i}.mp3`, ...(i === 2 ? { audioOffset: 1.5 } : {}) } : s)));
+  const curveBefore = musicGainCurve(voiced)!;
+  const intervalsBefore = narrationIntervals(voiced);
+  const [, whole] = sceneAudioSchedule(voiced);
+  let cuts = 0;
+  for (const at of [0.3, 0.7, 1.1, 2, 2.5, 3.7]) {
+    const cut = splitScene(voiced, 2, at);
+    assert.notEqual(cut, voiced);
+    cuts++;
+    const clips = sceneAudioSchedule(cut);
+    assert.equal(clips.length, 3, "one more clip");
+    const [a, b] = clips.slice(1);
+    assert.ok(near(a.startAt, whole.startAt) && near(a.offset, 1.5), "the first half plays from where the scene did");
+    assert.ok(near(b.startAt, a.startAt + a.length) && near(b.offset, a.offset + a.length), "the second half resumes the very next second of the file");
+    assert.ok(near(a.length + b.length, whole.length));
+    assert.ok(near(b.startAt - b.offset, whole.startAt - whole.offset), "startAt - offset is constant: the audio never slips against the picture");
+    assert.deepEqual(narrationIntervals(cut).map((i) => i.sceneIndex), intervalsBefore.map((i) => i.sceneIndex));
+    narrationIntervals(cut).forEach((i, k) => assert.ok(near(i.start, intervalsBefore[k].start) && near(i.end, intervalsBefore[k].end)));
+    const curve = musicGainCurve(cut)!;
+    assert.equal(curve.length, curveBefore.length);
+    curve.forEach((point, k) => assert.ok(near(point.t, curveBefore[k].t) && near(point.gain, curveBefore[k].gain, 1e-9), `ducking point ${k} @ ${at}`));
+  }
+  assert.equal(cuts, 6);
+});
+
+t("a CapCut session: cutting at the playhead on every single frame of the project", () => {
+  const p = deepFreeze(withMedia());
+  const total = projectDuration(p);
+  let applied = 0, refused = 0;
+  for (let frame = 0; frame <= Math.round(total * 30); frame++) {
+    const { index, local } = locate(p, frame / 30);
+    const scene = p.scenes[index];
+    const cut = snapToFrame(local);
+    const legal = cut >= 0.3 - 1e-6 && scene.duration - cut >= 0.3 - 1e-6;
+    const result = splitScene(p, index, local);
+    if (!legal) {
+      assert.equal(result, p, `frame ${frame}: a half under 0.3 s is refused`);
+      refused++;
+      continue;
+    }
+    applied++;
+    assert.equal(result.scenes.length, p.scenes.length + 1);
+    assert.equal(sceneIndexByUid(result, scene.uid), index, `frame ${frame}: the first half keeps its place and uid`);
+    assert.ok(!p.scenes.some((s) => s.uid === result.scenes[index + 1].uid), `frame ${frame}: the second half is new`);
+    assert.ok(near(projectDuration(result), total, 1e-9));
+    assert.ok(near(sceneStart(result, index + 1), sceneStart(p, index) + cut, 1e-9), `frame ${frame}: the seam is exactly under the playhead`);
+  }
+  assert.ok(applied > 400 && refused > 40, `not vacuous (${applied} applied, ${refused} refused)`);
+});
+
+t("history: a refused edit leaves no undo step, an applied one exactly one, and undo gives back the very same project", () => {
+  const p = four();
+  let h = H.createHistory(p);
+  for (const refused of [splitScene(p, 0, 0.1), moveScene(p, 1, 1), deleteScene(p, 99), addScene(p, 99), duplicateScene(p, -1)]) h = H.commit(h, refused, { now: 1 });
+  assert.equal(h.past.length, 0);
+  h = H.commit(h, splitScene(h.present, 0, 1), { now: 2 });
+  assert.equal(h.past.length, 1);
+  assert.equal(h.present.scenes.length, 5);
+  assert.equal(H.undo(h).present, p, "undo restores the very object it left");
+  assert.equal(H.redo(H.undo(h)).present, h.present);
+});
+
+t("moveScene equals plain array splice for every (from, to) pair, on projects of 1 to 6 scenes", () => {
+  for (let count = 1; count <= 6; count++) {
+    const p = proj(Array.from({ length: count }, (_, i) => normalizeScene({ uid: `mv-${i}-abcdef`, duration: 2 + i, voiceOver: `v${i}`, layers: [{ type: "text", text: "x" }] }, i, "16:9", true)));
+    for (let from = -2; from <= count + 1; from++) {
+      for (let to = -2; to <= count + 1; to++) {
+        const result = moveScene(p, from, to);
+        if (from < 0 || to < 0 || from >= count || to >= count || from === to) {
+          assert.equal(result, p, `${count}: ${from} -> ${to} is a no-op`);
+          continue;
+        }
+        const expected = uids(p);
+        expected.splice(to, 0, ...expected.splice(from, 1));
+        assert.deepEqual(uids(result), expected, `${count}: ${from} -> ${to}`);
+        assert.deepEqual(ids(result), expected.map((_, i) => i + 1));
+        assert.deepEqual(result.scenes.map((s) => s.voiceOver), expected.map((u) => p.scenes.find((s) => s.uid === u)!.voiceOver), "every scene travelled with its own content");
+      }
+    }
+  }
+});
+
+t("MODEL-BASED FUZZ: move / duplicate / delete / add / split leave exactly the scene list a plain-array model predicts", () => {
+  for (const seed of [11, 12, 13, 14]) {
+    const rnd = rng(seed);
+    const pick = (k: number) => Math.floor(rnd() * k);
+    let p = deepFreeze(proj([0, 1, 2].map((i) => normalizeScene({ uid: `model-${i}-abcdef`, duration: 2 + i, voiceOver: `v${i}`, layers: [{ type: "text", text: `T${i}` }] }, i, "16:9", true))));
+    const model = p.scenes.map((s) => ({ uid: s.uid, voiceOver: s.voiceOver, duration: s.duration }));
+    const everUsed = new Set(model.map((m) => m.uid));
+    for (let step = 0; step < 150; step++) {
+      const count = model.length;
+      const i = pick(count);
+      const j = pick(count);
+      const kind = pick(5);
+      const label = `seed ${seed} step ${step} kind ${kind} (${i}, ${j})`;
+      let next: MotionProject;
+      const fresh = (at: number) => {
+        const u = next.scenes[at].uid;
+        assert.ok(!everUsed.has(u), `${label}: a uid that was never used`);
+        everUsed.add(u);
+        return u;
+      };
+      if (kind === 0) {
+        next = moveScene(p, i, j);
+        const [m] = model.splice(i, 1);
+        model.splice(j, 0, m);
+        if (i === j) assert.equal(next, p);
+      } else if (kind === 1) {
+        next = duplicateScene(p, i);
+        model.splice(i + 1, 0, { ...model[i], uid: fresh(i + 1) });
+      } else if (kind === 2) {
+        next = deleteScene(p, i);
+        if (count > 1) model.splice(i, 1);
+        else assert.equal(next, p, `${label}: the last scene stays`);
+      } else if (kind === 3) {
+        next = addScene(p, i - 1 + pick(2)); // -1 .. count - 1
+        const at = next === p ? -1 : next.scenes.findIndex((s) => !model.some((m) => m.uid === s.uid));
+        assert.ok(at >= 0, `${label}: a new scene appeared`);
+        model.splice(at, 0, { uid: fresh(at), voiceOver: "", duration: 3 });
+        assert.equal(next.scenes.length, count + 1);
+      } else {
+        const time = rnd() * model[i].duration;
+        next = splitScene(p, i, time);
+        const cut = snapToFrame(time);
+        if (cut >= 0.3 - 1e-6 && model[i].duration - cut >= 0.3 - 1e-6) {
+          assert.equal(next.scenes[i].uid, model[i].uid, `${label}: the first half keeps the uid`);
+          model.splice(i, 1, { uid: model[i].uid, voiceOver: next.scenes[i].voiceOver, duration: cut }, { uid: fresh(i + 1), voiceOver: next.scenes[i + 1].voiceOver, duration: model[i].duration - cut });
+        } else assert.equal(next, p, `${label}: refused`);
+      }
+      assert.deepEqual(next.scenes.map((s) => [s.uid, s.voiceOver, s.duration]), model.map((m) => [m.uid, m.voiceOver, m.duration]), label);
+      assert.deepEqual(ids(next), model.map((_, k) => k + 1), label);
+      p = deepFreeze(next);
+    }
+  }
 });
 
 console.log(`\n${n} passed, ${failed} failed`);

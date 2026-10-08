@@ -8,7 +8,7 @@ export const FPS = 30;
 const EPS = 1e-6;
 /** Shortest a layer may be trimmed to. */
 export const MIN_LAYER = 0.1;
-export const MIN_SCENE = 1.5;
+export const MIN_SCENE = 0.3;
 export const MAX_SCENE = 40;
 /** Keyframes closer than this are the same pose. */
 const SAME_KEY = 0.004;
@@ -118,9 +118,9 @@ export function setSceneDuration(scene: MotionScene, duration: number): MotionSc
   };
 }
 
-/** Removes a layer. The last remaining layer can't be removed (an empty scene would be re-filled on reload). */
+/** Removes a layer. A scene may end up with none: it then shows its background only. */
 export function deleteLayer(scene: MotionScene, id: string): MotionScene {
-  if (scene.layers.length <= 1 || !find(scene, id)) return scene;
+  if (!find(scene, id)) return scene;
   return { ...scene, layers: scene.layers.filter((l) => l.id !== id) };
 }
 

@@ -37,8 +37,14 @@ export interface Point {
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const same = (a: number, b: number) => Math.abs(a - b) < EPS;
 const finite = (...values: number[]) => values.every(Number.isFinite);
-/** `+ 0` turns -0 into 0, which would otherwise end up in the project JSON and trip strict equality. */
-const roundTo = (v: number, decimals: number) => Math.round(v * 10 ** decimals) / 10 ** decimals + 0;
+/**
+ * `+ 0` turns -0 into 0, which would otherwise end up in the project JSON and trip strict equality. A value so large
+ * that scaling it by 10^decimals overflows has no decimals left to round: it is kept, not turned into Infinity.
+ */
+function roundTo(v: number, decimals: number): number {
+  const rounded = Math.round(v * 10 ** decimals) / 10 ** decimals;
+  return Number.isFinite(rounded) ? rounded + 0 : v;
+}
 
 /** Vector (x, y) turned by `degrees` the way ctx.rotate turns it (clockwise on screen, since y points down). */
 function turn(x: number, y: number, degrees: number): Point {
@@ -118,8 +124,10 @@ function localBox(layer: Layer, t: number, measure: Measure): { w: number; h: nu
   switch (layer.type) {
     case "text": {
       // The renderer starts the block at the origin when left-aligned and ends it there when right-aligned.
-      const { w, h } = measure(layer);
-      return { w: Math.max(0, w), h: Math.max(0, h), offset: [layer.align === "left" ? w / 2 : layer.align === "right" ? -w / 2 : 0, 0] };
+      // The offset comes from the clamped width, so a nonsensical negative measure can't shift the box.
+      const measured = measure(layer);
+      const w = Math.max(0, measured.w);
+      return { w, h: Math.max(0, measured.h), offset: [layer.align === "left" ? w / 2 : layer.align === "right" ? -w / 2 : 0, 0] };
     }
     case "captions": {
       const { w, h } = measure(layer);
@@ -339,7 +347,10 @@ export function rotateFromHandle(scene: MotionScene, layerId: string, t: number,
   // The handle points along the box's "up", so rotation 0 is straight up and 90 is to the right.
   const pointed = (Math.atan2(dx, -dy) * 180) / Math.PI;
   const angle = finite(snapDegrees) && snapDegrees > 0 ? Math.round(pointed / snapDegrees) * snapDegrees : pointed;
-  const rotation = wrapAngle(nearestTurn(angle, box.rotation));
+  // Rounded to what is stored BEFORE the centre is compensated: the compensation turns a vector as long as the
+  // distance from the layer's point to the centre (thousands of pixels for a wide layer), so the 0.005 degrees
+  // lost to rounding afterwards would swing the centre by several hundredths of a pixel.
+  const rotation = roundTo(wrapAngle(nearestTurn(angle, box.rotation)), DECIMALS.rotation);
 
   // The vector from the layer's point to the box centre turns with the layer; keep the centre where it is.
   const x = sampleAt(layer.x, t);

@@ -214,11 +214,13 @@ function tailLayer(layer: Layer, scene: MotionScene, cut: number): Layer | null 
  * - Refused (same project back) when either half would be shorter than 0.3 s or the index/time is invalid.
  */
 export function splitScene(project: MotionProject, index: number, localTime: number): MotionProject {
-  if (!isIndex(project, index) || !Number.isFinite(localTime)) return project;
+  if (!isIndex(project, index)) return project;
   const scene = project.scenes[index];
   const cut = snapToFrame(localTime);
   const rest = scene.duration - cut;
-  if (cut < MIN_SPLIT - EPS || rest < MIN_SPLIT - EPS) return project;
+  // Written as "not (long enough)" rather than "too short": every comparison with NaN is false, so this one test also
+  // refuses a NaN or infinite time and a corrupt NaN or infinite duration, instead of cutting them into corrupt scenes.
+  if (!(cut >= MIN_SPLIT - EPS && rest >= MIN_SPLIT - EPS && Number.isFinite(rest))) return project;
 
   const [firstText, secondText] = splitNarration(scene.voiceOver, cut / scene.duration);
   const tr = scene.transition;

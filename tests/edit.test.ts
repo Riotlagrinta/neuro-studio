@@ -89,7 +89,7 @@ t("moveKeyframes: unknown time or id changes nothing", () => {
   assert.deepEqual(clone(L(moveKeyframes(s0, L(s0, 0).id, 7.7, 1), 0)), clone(L(s0, 0)));
   assert.equal(moveKeyframes(s0, "nope", 1, 2), s0);
 });
-t("setSceneDuration: clamps 1.5–40; open layers follow; explicit ends beyond the new end open up", () => {
+t("setSceneDuration: clamps 0.3–40; open layers follow; explicit ends beyond the new end open up", () => {
   const s0 = scene();
   const short = setSceneDuration(s0, 4);
   assert.equal(short.duration, 4);
@@ -97,18 +97,19 @@ t("setSceneDuration: clamps 1.5–40; open layers follow; explicit ends beyond t
   assert.equal(L(short, 1).start, 2);
   const longer = setSceneDuration(s0, 20);
   assert.equal(L(longer, 1).end, 6, "an explicit end inside the scene stays");
-  assert.equal(setSceneDuration(s0, 0).duration, 1.5);
+  assert.equal(setSceneDuration(s0, 0).duration, 0.3);
   assert.equal(setSceneDuration(s0, 999).duration, 40);
   assert.equal(setSceneDuration(s0, 10), s0);
   assert.equal(L(setSceneDuration(s0, 1.5), 0).start, 1, "start 1 is still before the new end");
   assert.ok(L(setSceneDuration(setSceneDuration(s0, 10), 1.5), 1).start <= 1.4, "a layer starting after the new end is pulled back into view");
 });
-t("deleteLayer: removes one; the last layer can't be removed", () => {
+t("deleteLayer: removes one; a scene may be emptied", () => {
   const s0 = scene();
   const s1 = deleteLayer(s0, L(s0, 1).id);
   assert.equal(s1.layers.length, 2);
-  const s2 = deleteLayer(deleteLayer(s1, L(s0, 0).id), L(s0, 2).id);
+  const s2 = deleteLayer(s1, L(s0, 0).id);
   assert.equal(s2.layers.length, 1);
+  assert.equal(deleteLayer(s2, L(s0, 2).id).layers.length, 0, "the last one can go too");
   assert.equal(deleteLayer(s0, "nope"), s0);
 });
 t("updateLayer: sets static props; id and type can't be changed", () => {

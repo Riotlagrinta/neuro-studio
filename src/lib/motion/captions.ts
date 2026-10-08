@@ -27,14 +27,16 @@ const LETTER = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
 const TRAILING_MARKS = /^[\p{Pe}\p{Pf}\p{Pd}.,;:!?…%'"]+$/u;
 const LEADING_MARKS = /^[\p{Ps}\p{Pi}]+$/u;
 /** Quotes and brackets that may follow the full stop: «Bonjour.» still ends a sentence. */
-const CLOSERS = /[)\]}"'»”’]+$/;
+const CLOSERS = ")]}\"'»”’";
 
 /**
  * Whitespace-separated words, except that a token made only of such marks never stands alone: French
  * typography puts a space before "?", "!", ":", "%" and inside « guillemets », which would otherwise give
- * subtitles a word that is just "!". It sticks to the word it belongs to (opening marks to the next one).
- * Consequence: a word never contains whitespace, and "Oui !" is shown as "Oui!". Other symbols ("&", "+",
- * "/") are words of their own.
+ * subtitles a word that is just "!". It sticks to the word it belongs to (opening marks to the next one,
+ * and whatever follows an opening mark goes with it: « — Bonjour » keeps its dash after the guillemet).
+ * Consequence: a word never contains whitespace, the characters keep their order ("Oui !" is shown as
+ * "Oui!"), and scenes.ts can cut a text by counting non-blank characters. Other symbols ("&", "+", "/") are
+ * words of their own.
  */
 function splitWords(text: string): string[] {
   const words: string[] = [];
@@ -45,7 +47,7 @@ function splitWords(text: string): string[] {
     if (!leading && !TRAILING_MARKS.test(token)) {
       words.push(opening + token);
       opening = "";
-    } else if (leading || words.length === 0) {
+    } else if (leading || opening || words.length === 0) {
       opening += token;
     } else {
       words[words.length - 1] += token;
@@ -58,10 +60,14 @@ function splitWords(text: string): string[] {
   return words;
 }
 
+/** Looks through closing quotes and brackets (a plain scan: a regex for "closers at the end" backtracks quadratically). */
 function trailingPause(word: string): number {
-  const core = word.replace(CLOSERS, "");
-  if (/[.?!…]$/.test(core)) return SENTENCE_PAUSE;
-  if (/[,;:]$/.test(core)) return CLAUSE_PAUSE;
+  let end = word.length;
+  while (end > 0 && CLOSERS.includes(word[end - 1])) end--;
+  if (end === 0) return 0;
+  const last = word[end - 1];
+  if (".?!…".includes(last)) return SENTENCE_PAUSE;
+  if (",;:".includes(last)) return CLAUSE_PAUSE;
   return 0;
 }
 
@@ -281,19 +287,41 @@ function prepare(ctx: CanvasRenderingContext2D, layer: CaptionsLayer, font: stri
 }
 
 const HEX = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+/** How a canvas reads a colour back: "#rrggbb", or "rgba(r, g, b, a)" when it is translucent. */
+const RGB = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*[,)]/i;
 
 /** Black or white, whichever reads better on `background` (black when the colour can't be parsed). */
 function contrastColor(background: string): string {
-  const match = HEX.exec(background.trim());
-  if (!match) return "#000000";
-  const hex = match[1].length <= 4 ? match[1].replace(/./g, "$&$&") : match[1];
-  const linear = (at: number) => {
-    const v = parseInt(hex.slice(at, at + 2), 16) / 255;
-    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-  const luminance = 0.2126 * linear(0) + 0.7152 * linear(2) + 0.0722 * linear(4);
+  const css = background.trim();
+  const hex = HEX.exec(css);
+  let channels: number[] | null = null;
+  if (hex) {
+    const digits = hex[1].length <= 4 ? hex[1].replace(/./g, "$&$&") : hex[1];
+    channels = [0, 2, 4].map((at) => parseInt(digits.slice(at, at + 2), 16));
+  } else {
+    const rgb = RGB.exec(css);
+    if (rgb) channels = [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  }
+  if (!channels) return "#000000";
+  const [r, g, b] = channels.map((v) => {
+    const c = Math.min(255, v) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
   // Past this luminance black text has the higher contrast ratio than white.
-  return luminance > 0.179 ? "#000000" : "#ffffff";
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.179 ? "#000000" : "#ffffff";
+}
+
+/**
+ * The text colour for the active word on the box. The sanitizer lets names, rgb() and hsl() through as well as
+ * hex, and only the canvas knows what they are: it reads any valid colour back as "#rrggbb" / "rgba(...)", and
+ * ignores an invalid one, so what it reads back is exactly the colour the box is painted with.
+ */
+function boxTextColor(ctx: CanvasRenderingContext2D, highlight: string): string {
+  ctx.save();
+  ctx.fillStyle = highlight;
+  const painted = ctx.fillStyle;
+  ctx.restore();
+  return contrastColor(typeof painted === "string" ? painted : "");
 }
 
 /**
@@ -303,7 +331,9 @@ function contrastColor(background: string): string {
  */
 export function drawCaptions(ctx: CanvasRenderingContext2D, layer: CaptionsLayer, t: number, fonts: FontStacks, sceneDuration: number): void {
   const from = layer.start;
-  const to = layer.end ?? sceneDuration;
+  // The scene is the hard limit: a layer that claims to end after it (the sanitizer allows it) must not spread
+  // its words over time that is never played.
+  const to = Math.min(layer.end ?? sceneDuration, sceneDuration);
   if (!(to > from)) return;
   const over = t - to;
   const alpha = over <= HOLD ? 1 : 1 - (over - HOLD) / FADE;
@@ -316,7 +346,7 @@ export function drawCaptions(ctx: CanvasRenderingContext2D, layer: CaptionsLayer
   const active = current - page.first;
   const { size, style } = layer;
   // On a box the highlight colour is the box, so the word needs a colour of its own.
-  const activeColor = style === "box" ? contrastColor(layer.highlight) : layer.highlight;
+  const activeColor = style === "box" ? boxTextColor(ctx, layer.highlight) : layer.highlight;
 
   ctx.save();
   ctx.globalAlpha *= alpha;

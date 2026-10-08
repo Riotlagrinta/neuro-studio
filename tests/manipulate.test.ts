@@ -20,6 +20,7 @@ import {
   type Point,
 } from "../src/lib/motion/manipulate";
 import { renderFrame, SYSTEM_FONTS } from "../src/lib/motion/render";
+import { EASES } from "../src/lib/motion/types";
 import type { Anchor, CaptionsLayer, EllipseLayer, Keyframe, Layer, MediaLayer, MotionScene, RectLayer, TextLayer, Track } from "../src/lib/motion/types";
 
 let n = 0, failed = 0;
@@ -995,5 +996,516 @@ test("NaN and Infinity never reach the output, whatever the argument", () => {
   }
 });
 
+console.log("adversarial review: fuzz against brute-force references");
+
+/** Deterministic generator (mulberry32): a failing fuzz case must replay identically on every run. */
+type Rng = () => number;
+function rng(seed: number): Rng {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const between = (r: Rng, lo: number, hi: number) => lo + r() * (hi - lo);
+const pick = <T,>(r: Rng, list: readonly T[]): T => list[Math.floor(r() * list.length)];
+
+/** A plain number, or 2-4 keyframes on whole tenths of a second (times that are on the frame grid AND whole milliseconds). */
+function randomTrack(r: Rng, lo: number, hi: number): Track {
+  if (r() < 0.45) return between(r, lo, hi);
+  const times = new Set<number>();
+  const count = 2 + Math.floor(r() * 3);
+  while (times.size < count) times.add(Math.round(r() * 40) / 10);
+  return [...times].sort((a, b) => a - b).map((t) => {
+    const key: Keyframe = { t, v: between(r, lo, hi) };
+    if (r() < 0.7) key.ease = pick(r, EASES);
+    return key;
+  });
+}
+
+const SHAPES = ["rect", "ellipse", "media"] as const;
+const ALL_KINDS: readonly Layer["type"][] = [...SHAPES, "text", "captions"];
+function randomLayer(r: Rng, id: string, kinds: readonly Layer["type"][] = ALL_KINDS): Layer {
+  const o = { id, x: randomTrack(r, -300, 2300), y: randomTrack(r, -200, 1300), rotation: randomTrack(r, -720, 720), scale: randomTrack(r, 0.06, 6) };
+  const size = { w: randomTrack(r, 20, 1500), h: randomTrack(r, 20, 900), anchor: pick(r, ANCHORS) };
+  switch (pick(r, kinds)) {
+    case "rect": return rect({ ...o, ...size });
+    case "ellipse": return ellipse({ ...o, ...size });
+    case "media": return media({ ...o, ...size });
+    case "text": return text({ ...o, text: "x".repeat(1 + Math.floor(r() * 40)), align: pick(r, ["left", "center", "right"] as const) });
+    default: return captions({ ...o, text: "y".repeat(1 + Math.floor(r() * 40)) });
+  }
+}
+/** A time on the frame grid that is also a whole number of milliseconds, where every gesture is exact. */
+const exactTime = (r: Rng) => Math.round(between(r, 0, 3) * 10) / 10;
+/** The angle between two directions, in degrees, whatever turns they differ by. */
+const angleGap = (a: number, b: number) => Math.abs((((a - b) % 360) + 540) % 360 - 180);
+
+const inQuad = (q: Point[], x: number, y: number) => {
+  let positive = false, negative = false;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4];
+    const side = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+    if (side > 0) positive = true;
+    if (side < 0) negative = true;
+  }
+  return !(positive && negative);
+};
+const edgeDistance = (q: Point[], x: number, y: number) => Math.min(...q.map((a, i) => {
+  const b = q[(i + 1) % 4];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const u = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(x - (a.x + u * dx), y - (a.y + u * dy));
+}));
+
+test("fuzz: layerBox matches the corners renderFrame really draws, random shapes with animated tracks at random off-grid times", () => {
+  const r = rng(11);
+  let compared = 0;
+  for (let i = 0; i < 400; i++) {
+    const layer = randomLayer(r, "L", SHAPES);
+    const time = between(r, 0, 4);
+    const box = layerBox(layer, sceneOf(layer), time);
+    assert.equal(box !== null, wasDrawn(layer, time), `case ${i}: visible at ${time}`);
+    if (!box) continue;
+    const want = drawnShape(layer, time);
+    boxCorners(box).forEach((p, k) => nearPoint(p, want[k].x, want[k].y, 1e-6, `case ${i} corner ${k}`));
+    compared++;
+  }
+  assert.ok(compared > 250, `only ${compared} cases were visible: the generator is too hostile to test anything`);
+});
+
+test("fuzz: text boxes match what renderFrame draws for every align, with animated position, scale and rotation", () => {
+  const r = rng(13);
+  let compared = 0;
+  for (let i = 0; i < 300; i++) {
+    const layer = text({
+      x: randomTrack(r, -300, 2300), y: randomTrack(r, -200, 1300), rotation: randomTrack(r, -720, 720), scale: randomTrack(r, 0.06, 6),
+      align: pick(r, ["left", "center", "right"] as const), text: "x".repeat(1 + Math.floor(r() * 40)),
+    });
+    const time = between(r, 0, 4);
+    const box = layerBox(layer, sceneOf(layer), time, fake);
+    const drawn = record(sceneOf(layer), time).find((c) => c.kind === "text");
+    assert.equal(box !== null, drawn !== undefined, `case ${i}: visible at ${time}`);
+    if (!box || !drawn) continue;
+    const lh = layer.size * layer.lineHeight;
+    const want = frameCorners(drawn.m, drawn.args[0], drawn.args[1] - lh / 2, layer.text.length * 10, lh);
+    boxCorners(box).forEach((p, k) => nearPoint(p, want[k].x, want[k].y, 1e-6, `case ${i} (${layer.align}) corner ${k}`));
+    compared++;
+  }
+  assert.ok(compared > 200, `only ${compared} cases were visible`);
+});
+
+test("fuzz: hitTest agrees with a polygon test on what renderFrame drew (topmost first, media last)", () => {
+  const r = rng(23);
+  let hits = 0, misses = 0;
+  for (let i = 0; i < 300; i++) {
+    const layers = Array.from({ length: 2 + Math.floor(r() * 5) }, (_, k) => randomLayer(r, `L${k}`, SHAPES));
+    const scene = sceneOf(...layers);
+    const time = between(r, 0, 4);
+    const quads = layers.map((l) => (wasDrawn(l, time) ? drawnShape(l, time) : null));
+    for (let probe = 0; probe < 12; probe++) {
+      const x = between(r, -200, 2100), y = between(r, -200, 1300);
+      // A point a hair from an edge can go either way with rounding, which is not what this test is about.
+      if (quads.some((q) => q && edgeDistance(q, x, y) < 1e-3)) continue;
+      let top: string | null = null, backdrop: string | null = null;
+      for (let k = layers.length - 1; k >= 0; k--) {
+        const q = quads[k];
+        if (!q || !inQuad(q, x, y)) continue;
+        if (layers[k].type === "media") backdrop ??= layers[k].id;
+        else { top = layers[k].id; break; }
+      }
+      const want = top ?? backdrop;
+      assert.equal(hitTest(scene, time, x, y), want, `case ${i} probe ${probe} at (${x.toFixed(1)}, ${y.toFixed(1)})`);
+      if (want) hits++; else misses++;
+    }
+  }
+  assert.ok(hits > 300 && misses > 100, `hits ${hits}, misses ${misses}: both outcomes must be exercised`);
+});
+
+test("fuzz: hit-test margin is slack along the box's own axes, whatever the rotation", () => {
+  const r = rng(29);
+  for (let i = 0; i < 200; i++) {
+    const box: Box = { cx: between(r, 0, 1920), cy: between(r, 0, 1080), w: between(r, 10, 800), h: between(r, 10, 800), rotation: between(r, -720, 720), scale: 1 };
+    const margin = between(r, 1, 30);
+    // A point `d` beyond the middle of the top edge, along the box's own up.
+    const above = (d: number) => rotateHandle(box, d);
+    assert.ok(pointInBox(box, above(margin - 0.01).x, above(margin - 0.01).y, margin), `case ${i}: inside the slack`);
+    assert.ok(!pointInBox(box, above(margin + 0.01).x, above(margin + 0.01).y, margin), `case ${i}: past the slack`);
+    assert.ok(!pointInBox(box, above(margin - 0.01).x, above(margin - 0.01).y), `case ${i}: and a miss without the slack`);
+    const handle = rotateHandle(box, 40);
+    near(Math.hypot(handle.x - box.cx, handle.y - box.cy), box.h / 2 + 40, 1e-9, `case ${i}: handle distance`);
+  }
+});
+
+test("fuzz: the opposite corner stays put for random layers and random drags (animated tracks, any anchor, up to two turns, scale clamped or not)", () => {
+  const r = rng(37);
+  let resized = 0, clamped = 0;
+  for (let i = 0; i < 700; i++) {
+    const layer = randomLayer(r, "L");
+    const scene = sceneOf(layer);
+    const time = exactTime(r);
+    const box = layerBox(layer, scene, time, fake);
+    if (!box) continue;
+    const corner = pick(r, CORNERS);
+    const before = boxCorners(box);
+    const fixed = opposite(before, corner);
+    const dragged = cornerOf(before, corner);
+    // Anywhere from the frame's neighbourhood to far outside it.
+    const px = between(r, -1500, 3500), py = between(r, -1000, 2500);
+    const next = resizeFromCorner(scene, "L", time, box, corner, px, py);
+    const after = layerBox(first(next), next, time, fake);
+    assert.ok(after, `case ${i}: still visible afterwards`);
+    const where = `case ${i} (${layer.type} ${corner} at ${time})`;
+    assert.ok(dist(opposite(boxCorners(after), corner), fixed) < 0.01, `${where}: fixed corner moved by ${dist(opposite(boxCorners(after), corner), fixed)}`);
+    near(after.w / after.h, box.w / box.h, 1e-9, `${where}: aspect ratio`);
+    near(after.rotation, box.rotation, 0, `${where}: rotation`);
+    // An independent derivation of the wanted scale: the pointer projected on the diagonal, in frame coordinates.
+    const dx = dragged.x - fixed.x, dy = dragged.y - fixed.y;
+    const wanted = ((px - fixed.x) * dx + (py - fixed.y) * dy) / (dx * dx + dy * dy);
+    const expected = Math.min(20, Math.max(0.05, box.scale * wanted));
+    near(after.scale, expected, 0.0006, `${where}: scale follows the projection`);
+    if (expected !== box.scale * wanted) clamped++;
+    else {
+      const reach = Math.hypot(dx, dy) * 0.0006 / box.scale + 0.02;
+      assert.ok(dist(cornerOf(boxCorners(after), corner), { x: fixed.x + wanted * dx, y: fixed.y + wanted * dy }) < reach, `${where}: dragged corner lands on the pointer's projection`);
+    }
+    resized++;
+  }
+  assert.ok(resized > 400 && clamped > 20, `resized ${resized}, clamped ${clamped}: both paths must be exercised`);
+});
+
+test("fuzz: rotating keeps the box centre where it was and points the handle at the pointer", () => {
+  const r = rng(41);
+  let turned = 0;
+  for (let i = 0; i < 700; i++) {
+    const layer = randomLayer(r, "L");
+    const scene = sceneOf(layer);
+    const time = exactTime(r);
+    const box = layerBox(layer, scene, time, fake);
+    if (!box) continue;
+    const px = between(r, -500, 2500), py = between(r, -300, 1500);
+    if (Math.hypot(px - box.cx, py - box.cy) < 20) continue;
+    const snap = pick(r, [0, 0, 15, 45]);
+    const next = rotateFromHandle(scene, "L", time, box, px, py, snap);
+    const after = layerBox(first(next), next, time, fake);
+    assert.ok(after, `case ${i}: still visible afterwards`);
+    const where = `case ${i} (${layer.type}, snap ${snap}, centre-to-point offset ${Math.hypot(box.cx - sampleAt(layer.x, time), box.cy - sampleAt(layer.y, time)).toFixed(0)} px)`;
+    assert.ok(Math.hypot(after.cx - box.cx, after.cy - box.cy) < 0.02, `${where}: the centre moved by ${Math.hypot(after.cx - box.cx, after.cy - box.cy)}`);
+    near(after.w, box.w, 1e-9, `${where}: width`);
+    near(after.scale, box.scale, 0, `${where}: scale`);
+    // An independent derivation of the direction: the handle must sit on the ray from the centre to the pointer.
+    const want = (Math.atan2(px - box.cx, -(py - box.cy)) * 180) / Math.PI;
+    const target = snap > 0 ? Math.round(want / snap) * snap : want;
+    assert.ok(angleGap(after.rotation, target) <= 0.006, `${where}: rotation ${after.rotation}, wanted ${target}`);
+    assert.ok(Math.abs(after.rotation) <= 360, `${where}: stays in [-360, 360]`);
+    const handle = rotateHandle(after);
+    if (snap === 0) assert.ok(angleGap((Math.atan2(handle.x - after.cx, -(handle.y - after.cy)) * 180) / Math.PI, want) <= 0.006, `${where}: handle direction`);
+    turned++;
+  }
+  assert.ok(turned > 450, `only ${turned} cases turned`);
+});
+
+test("fuzz: translating moves the box by exactly the drag and touches nothing else", () => {
+  const r = rng(43);
+  for (let i = 0; i < 500; i++) {
+    const layer = randomLayer(r, "L");
+    const scene = sceneOf(layer, rect({ id: "other" }));
+    const time = exactTime(r);
+    const box = layerBox(layer, scene, time, fake);
+    if (!box) continue;
+    const dx = between(r, -800, 800), dy = between(r, -800, 800);
+    const next = translateLayer(scene, "L", time, dx, dy);
+    const after = layerBox(first(next), next, time, fake)!;
+    near(after.cx, box.cx + dx, 0.0051, `case ${i}: x`);
+    near(after.cy, box.cy + dy, 0.0051, `case ${i}: y`);
+    assert.deepEqual([after.w, after.h, after.rotation, after.scale], [box.w, box.h, box.rotation, box.scale], `case ${i}`);
+    assert.equal(next.layers[1], scene.layers[1]);
+    for (const prop of ["rotation", "scale", "opacity"] as const) assert.equal(first(next)[prop], layer[prop], `case ${i}: ${prop} is the same track`);
+  }
+});
+
+test("fuzz: setTrackAt keeps keys strictly sorted, writes exactly one key, rounds the value, and is idempotent", () => {
+  const r = rng(53);
+  let inserted = 0, updated = 0;
+  for (let i = 0; i < 1500; i++) {
+    const track = randomTrack(r, -500, 500);
+    if (typeof track === "number") continue;
+    const frozen = deepFreeze(JSON.parse(JSON.stringify(track)) as Keyframe[]);
+    // Half the time aim at an existing key (within a few milliseconds of it, on either side) so updates are exercised too.
+    const t = r() < 0.5 ? pick(r, frozen).t + between(r, -0.006, 0.006) : between(r, -1, 6), v = between(r, -1000, 1000);
+    const ease = r() < 0.4 ? pick(r, EASES) : undefined;
+    const next = keys(setTrackAt(frozen, t, v, ease));
+    const where = `case ${i} (t ${t}, v ${v}, ease ${ease})`;
+    for (let k = 1; k < next.length; k++) assert.ok(next[k].t > next[k - 1].t, `${where}: sorted`);
+    const at = Math.round((Math.round(Math.max(0, t) * 30) / 30) * 1000) / 1000;
+    const near4 = (k: Keyframe) => Math.abs(k.t - at) <= 0.004;
+    const was = frozen.find(near4);
+    assert.equal(next.length, frozen.length + (was ? 0 : 1), `${where}: one key written`);
+    const written = next.find(near4);
+    assert.ok(written, `${where}: the key is there`);
+    assert.equal(written.t, was ? was.t : at, `${where}: time`);
+    assert.equal(written.v, Math.round(v * 100) / 100 + 0, `${where}: value`);
+    const inherited = ease ?? (was ? was.ease : frozen.find((k) => k.t > at)?.ease);
+    assert.equal(written.ease, inherited, `${where}: ease`);
+    assert.equal("ease" in written, inherited !== undefined, `${where}: no ease property when there is none`);
+    assert.deepEqual(next.filter((k) => !near4(k)), frozen.filter((k) => !near4(k)), `${where}: the other keys are untouched`);
+    near(sampleAt(next, written.t), written.v, 1e-6, `${where}: the curve passes through the key`);
+    assert.equal(setTrackAt(next, t, v, ease), next, `${where}: applying it again is a no-op`);
+    if (was) updated++; else inserted++;
+  }
+  assert.ok(inserted > 300 && updated > 20, `inserted ${inserted}, updated ${updated}`);
+});
+
+console.log("adversarial review: targeted attacks");
+
+test("a track with a single key: a gesture updates it at its time and appends after it", () => {
+  const one: Keyframe[] = [{ t: 0, v: 100 }];
+  assert.deepEqual(setTrackAt(one, 0, 130), [{ t: 0, v: 130 }]);
+  assert.deepEqual(setTrackAt(one, 2, 130), [{ t: 0, v: 100 }, { t: 2, v: 130 }]);
+  assert.deepEqual(setTrackAt([{ t: 1, v: 100 }], 0, 5), [{ t: 0, v: 5 }, { t: 1, v: 100 }]);
+  const scene = sceneOf(rect({ x: one }));
+  assert.deepEqual(first(translateLayer(scene, "rect", 2, 50, 0)).x, [{ t: 0, v: 100 }, { t: 2, v: 150 }]);
+  assert.deepEqual(first(translateLayer(scene, "rect", 0, 50, 0)).x, [{ t: 0, v: 150 }]);
+});
+
+test("huge but finite values never turn into Infinity: rounding to a hundredth must not overflow", () => {
+  assert.equal(setTrackAt(5, 1, 1e307), 1e307);
+  assert.equal(setTrackAt(5, 1, -1e307), -1e307);
+  assert.equal(keys(setTrackAt(K, 0.5, 1.7e308))[1].v, 1.7e308);
+  assert.equal(setTrackAt(1e307, 1, 1e307), 1e307, "already there");
+  const scene = sceneOf(rect());
+  for (const dx of [1e307, -1e307, 1.7e308, -1.7e308]) {
+    const next = translateLayer(scene, "rect", 1, dx, dx);
+    for (const v of numbersIn(next)) assert.ok(Number.isFinite(v), `dx ${dx}`);
+  }
+  assert.equal(translateLayer(sceneOf(rect({ x: 1.7e308 })), "rect", 1, 1.7e308, 0).layers[0].x, 1.7e308, "the sum overflows: the edit is refused, not stored as Infinity");
+});
+
+test("pointers at the edge of the number line never poison a scene, whatever the corner or snapping", () => {
+  const layer = rect({ rotation: 33, anchor: "left", x: [{ t: 0, v: 300 }, { t: 2, v: 900 }] });
+  const scene = sceneOf(layer);
+  const box = boxOf(layer);
+  const far = [1e308, -1e308, 1.7e308, -1.7e308, 1e155, -1e155];
+  for (const px of far) {
+    for (const py of far) {
+      for (const corner of CORNERS) for (const v of numbersIn(resizeFromCorner(scene, "rect", 1, box, corner, px, py))) assert.ok(Number.isFinite(v), `resize ${corner} (${px}, ${py})`);
+      for (const snap of [0, 15]) for (const v of numbersIn(rotateFromHandle(scene, "rect", 1, box, px, py, snap))) assert.ok(Number.isFinite(v), `rotate (${px}, ${py}) snap ${snap}`);
+      assert.equal(hitTest(scene, 1, px, py), null);
+    }
+  }
+});
+
+test("huge sizes: a box whose size overflows is simply not there", () => {
+  assert.equal(layerBox(rect({ w: 1e308, scale: 20 }), sceneOf(rect()), 1), null);
+  assert.equal(hitTest(sceneOf(rect({ w: 1e308, scale: 20 })), 1, 960, 540), null);
+  const big = boxOf(rect({ w: 6000, h: 6000, scale: 30, anchor: "left" }));
+  assert.ok(Number.isFinite(big.cx) && big.w === 180000);
+  assert.ok(pointInBox(big, 960 + 90000, 540));
+});
+
+test("a measure that returns a negative size is a zero-size block centred where the alignment says, not a shifted one", () => {
+  const nonsense: Measure = () => ({ w: -100, h: -20 });
+  for (const align of ["left", "center", "right"] as const) {
+    const b = boxOf(text({ align, x: 500, y: 400 }), 1, nonsense);
+    assert.deepEqual([b.cx, b.cy, b.w, b.h], [500, 400, 0, 0], align);
+  }
+});
+
+test("layers whose stored scale is outside [0.05, 20] (a pop-in caught mid-way, a sanitized 30) still resize about the fixed corner", () => {
+  for (const scale of [0.002, 0.01, 0.049, 25, 30]) {
+    for (const rotation of [0, 40, -150]) {
+      const layer = rect({ scale, rotation, anchor: "right", w: 800, h: 300 });
+      const scene = sceneOf(layer);
+      const box = boxOf(layer);
+      const before = boxCorners(box);
+      for (const corner of CORNERS) {
+        const fixed = opposite(before, corner), dragged = cornerOf(before, corner);
+        for (const factor of [0.5, 1.3, 40]) {
+          const next = resizeFromCorner(scene, "rect", 1, box, corner, fixed.x + (dragged.x - fixed.x) * factor, fixed.y + (dragged.y - fixed.y) * factor);
+          const after = layerBox(first(next), next, 1)!;
+          assert.ok(dist(opposite(boxCorners(after), corner), fixed) < 0.01, `scale ${scale} rot ${rotation} ${corner} x${factor}`);
+          assert.ok(after.scale >= 0.05 && after.scale <= 20, `scale ${scale} x${factor}: ${after.scale}`);
+        }
+      }
+    }
+  }
+});
+
+test("a stale or foreign box gives a wrong but finite and in-range result, never an exception", () => {
+  const layer = rect({ x: [{ t: 0, v: 400 }, { t: 2, v: 800 }] });
+  const scene = sceneOf(layer);
+  const strangers: Box[] = [
+    { cx: -5000, cy: 9000, w: 3, h: 70000, rotation: 777, scale: 0.0001 },
+    { cx: 0, cy: 0, w: 1e-9, h: 1e-9, rotation: 0, scale: 1e-9 },
+    { cx: 1e9, cy: -1e9, w: 1e9, h: 1, rotation: -3600, scale: 30 },
+  ];
+  for (const box of strangers) {
+    for (const corner of CORNERS) {
+      const next = resizeFromCorner(scene, "rect", 1, box, corner, 700, 200);
+      for (const v of numbersIn(next)) assert.ok(Number.isFinite(v), `${corner} ${JSON.stringify(box)}`);
+      assert.ok(sampleAt(first(next).scale, 1) >= 0.05 && sampleAt(first(next).scale, 1) <= 20);
+    }
+    for (const v of numbersIn(rotateFromHandle(scene, "rect", 1, box, 700, 200, 15))) assert.ok(Number.isFinite(v));
+  }
+});
+
+test("setTrackAt: a pathological number of decimals never stores NaN or Infinity", () => {
+  for (const decimals of [NaN, Infinity, -Infinity, -1, 0, 20, 400]) {
+    for (const track of [5, K]) {
+      for (const v of numbersIn(setTrackAt(track, 0.5, 7.123456, undefined, decimals))) assert.ok(Number.isFinite(v), `decimals ${decimals}`);
+    }
+  }
+  assert.equal(setTrackAt(5, 1, 7.126, undefined, 0), 7);
+});
+
+test("setTrackAt on an empty keyframe array writes the only key", () => {
+  assert.deepEqual(setTrackAt([], 1.0167, 5), [{ t: 1.033, v: 5 }]);
+  assert.deepEqual(setTrackAt([], 1, 5, "linear"), [{ t: 1, v: 5, ease: "linear" }]);
+});
+
+test("a zero-size layer can't be grabbed by its corner, and resizing from it is a no-op", () => {
+  const layer = rect({ w: 0, h: 0 });
+  const scene = sceneOf(layer);
+  const box = boxOf(layer);
+  for (const corner of CORNERS) assert.equal(resizeFromCorner(scene, "rect", 1, box, corner, 1500, 900), scene);
+});
+
+test("scaling down and down again settles on the minimum and then stops being an edit", () => {
+  let scene = sceneOf(rect());
+  for (let i = 0; i < 80; i++) scene = scaleLayer(scene, "rect", 1, 0.7);
+  assert.equal(first(scene).scale, 0.05);
+  assert.equal(scaleLayer(scene, "rect", 1, 0.5), scene, "already at the floor");
+  let big = sceneOf(rect());
+  for (let i = 0; i < 80; i++) big = scaleLayer(big, "rect", 1, 1.6);
+  assert.equal(first(big).scale, 20);
+  assert.equal(scaleLayer(big, "rect", 1, 3), big, "already at the ceiling");
+});
+
+test("scale there and back again returns the layer to where it started", () => {
+  for (const start of [1, 1.3, 0.8, 2.5]) {
+    const scene = sceneOf(rect({ scale: start }));
+    assert.equal(first(scaleLayer(scaleLayer(scene, "rect", 1, 2), "rect", 1, 0.5)).scale, start);
+  }
+});
+
+test("translate there and back lands on the starting values; on an animated track the key written at the playhead stays, pinning the pose", () => {
+  const scene = sceneOf(rect({ x: [{ t: 0, v: 100 }, { t: 2, v: 300 }] }));
+  const there = translateLayer(scene, "rect", 1, 33.337, -12.5);
+  const back = translateLayer(there, "rect", 1, -33.337, 12.5);
+  assert.equal(sampleAt(first(back).x, 1), sampleAt(first(scene).x, 1), "the position at the playhead is back");
+  assert.equal(first(back).y, 540, "a static property is just a value again");
+  assert.deepEqual(keys(first(back).x).map((k) => k.t), [0, 1, 2], "the key stays (as in After Effects); a gesture that ends where it began, from the BASE scene, is the translateLayer(0, 0) no-op");
+  assert.equal(translateLayer(scene, "rect", 1, 0, 0), scene);
+});
+
+test("operations on different properties commute: translate, scale and rotate in any order give the same scene", () => {
+  const scene = sceneOf(rect({ x: [{ t: 0, v: 100 }, { t: 2, v: 300 }], rotation: [{ t: 0, v: 0 }, { t: 2, v: 90 }] }), text({ id: "t" }));
+  const ops = [
+    (s: MotionScene) => translateLayer(s, "rect", 1, 25, -40),
+    (s: MotionScene) => scaleLayer(s, "rect", 1, 1.5),
+    (s: MotionScene) => rotateLayer(s, "rect", 1, 33),
+  ];
+  const orders = [[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]];
+  const results = orders.map((order) => order.reduce((s, k) => ops[k](s), scene));
+  for (const result of results) assert.deepEqual(result, results[0]);
+  assert.notDeepEqual(results[0], scene);
+});
+
+test("rotating again from the result towards a snapped direction is a no-op (fresh box), whatever the offset between point and centre", () => {
+  const r = rng(61);
+  let checked = 0;
+  for (let i = 0; i < 300; i++) {
+    const layer = randomLayer(r, "L");
+    const scene = sceneOf(layer);
+    const time = exactTime(r);
+    const box = layerBox(layer, scene, time, fake);
+    if (!box) continue;
+    // A pointer exactly on a multiple of 15 degrees from the centre: the angle is stable, so the second pass has nothing to do.
+    const direction = (Math.floor(r() * 24) - 12) * 15, reach = between(r, 50, 2000);
+    const px = box.cx + Math.sin((direction * Math.PI) / 180) * reach, py = box.cy - Math.cos((direction * Math.PI) / 180) * reach;
+    const once = rotateFromHandle(scene, "L", time, box, px, py, 15);
+    const fresh = layerBox(first(once), once, time, fake)!;
+    assert.equal(rotateFromHandle(once, "L", time, fresh, px, py, 15), once, `case ${i}: the second pass changed something`);
+    checked++;
+  }
+  assert.ok(checked > 200, `only ${checked} cases`);
+});
+
+test("repeating a free rotation from its own results never creeps: a few passes stay within rounding of the first", () => {
+  const r = rng(67);
+  for (let i = 0; i < 300; i++) {
+    const layer = randomLayer(r, "L");
+    const scene = sceneOf(layer);
+    const time = exactTime(r);
+    const box = layerBox(layer, scene, time, fake);
+    if (!box) continue;
+    const reach = between(r, 300, 2000), direction = between(r, -180, 180);
+    const px = box.cx + Math.sin((direction * Math.PI) / 180) * reach, py = box.cy - Math.cos((direction * Math.PI) / 180) * reach;
+    const first1 = rotateFromHandle(scene, "L", time, box, px, py);
+    let s = first1;
+    for (let pass = 0; pass < 5; pass++) s = rotateFromHandle(s, "L", time, layerBox(first(s), s, time, fake)!, px, py);
+    const a = layerBox(first(first1), first1, time, fake)!, b = layerBox(first(s), s, time, fake)!;
+    assert.ok(angleGap(a.rotation, b.rotation) <= 0.05, `case ${i}: rotation crept from ${a.rotation} to ${b.rotation}`);
+    assert.ok(Math.hypot(a.cx - b.cx, a.cy - b.cy) < 0.1, `case ${i}: the centre crept by ${Math.hypot(a.cx - b.cx, a.cy - b.cy)}`);
+    assert.ok(Math.hypot(b.cx - box.cx, b.cy - box.cy) < 0.1, `case ${i}: and it is still where it was`);
+  }
+});
+
+test("rotating far from the layer's point keeps the centre within 0.01 px: the stored angle is rounded, so the compensation must use the rounded one", () => {
+  // A 1920 px wide media layer anchored on its left edge: the box centre is 1920 px (at scale 2) from the point (x, y).
+  const layer = media({ anchor: "left", scale: 2, x: 400, y: 300, w: 1920, h: 400 });
+  const scene = sceneOf(layer);
+  const box = boxOf(layer);
+  for (const [px, py] of [[3000, 900], [-800, 1100], [123, 456], [1700.37, 61.91]]) {
+    const next = rotateFromHandle(scene, "media", 1, box, px, py);
+    const after = layerBox(first(next), next, 1)!;
+    assert.ok(Math.hypot(after.cx - box.cx, after.cy - box.cy) < 0.01, `pointer (${px}, ${py}): the centre moved by ${Math.hypot(after.cx - box.cx, after.cy - box.cy)}`);
+  }
+});
+
+test("frames that are not a whole millisecond: the key lands up to half a millisecond early, so a fast animation moves the fixed corner a little", () => {
+  // Frame 7 of 30 is 233.33 ms but the key is written at 233 ms (keys are whole milliseconds). Everything is exact on
+  // whole-millisecond frames (0.1 s steps); on the others the error is the animation's speed times at most 0.5 ms.
+  const layer = rect({
+    anchor: "left", rotation: 25,
+    scale: [{ t: 0, v: 1 }, { t: 2, v: 2, ease: "linear" }],
+    x: [{ t: 0, v: 400 }, { t: 2, v: 800 }],
+    y: [{ t: 0, v: 300 }, { t: 2, v: 500 }],
+  });
+  const scene = sceneOf(layer);
+  const driftAt = (time: number) => {
+    const box = boxOf(layer, time);
+    const before = boxCorners(box);
+    const next = resizeFromCorner(scene, "rect", time, box, "tr", before[1].x + 90, before[1].y - 60);
+    return dist(boxCorners(layerBox(first(next), next, time)!)[3], before[3]);
+  };
+  for (const frame of [3, 6, 9, 15, 30, 45]) assert.ok(driftAt(frame / 30) < 0.01, `frame ${frame} is a whole millisecond`);
+  for (const frame of [1, 2, 4, 7, 8, 11, 13]) assert.ok(driftAt(frame / 30) < 0.5, `frame ${frame}: ${driftAt(frame / 30)}`);
+});
+
+test("a long random session of gestures on a keyframed layer stays finite, sorted and inside the scale limits", () => {
+  const r = rng(71);
+  let scene = sceneOf(rect({ x: [{ t: 0, v: 400 }, { t: 2, v: 800 }], rotation: [{ t: 0, v: 0 }, { t: 2, v: 90 }], scale: [{ t: 0, v: 1 }, { t: 2, v: 2 }] }), text({ id: "t" }));
+  for (let i = 0; i < 600; i++) {
+    const time = Math.round(r() * 60) / 30;
+    const b = layerBox(first(scene), scene, time);
+    if (!b) continue;
+    const k = Math.floor(r() * 5);
+    if (k === 0) scene = translateLayer(scene, "rect", time, (r() - 0.5) * 300, (r() - 0.5) * 300);
+    else if (k === 1) scene = scaleLayer(scene, "rect", time, 0.4 + r() * 1.8);
+    else if (k === 2) scene = resizeFromCorner(scene, "rect", time, b, CORNERS[Math.floor(r() * 4)], r() * 1920, r() * 1080);
+    else if (k === 3) scene = rotateFromHandle(scene, "rect", time, b, r() * 1920, r() * 1080, r() < 0.5 ? 15 : 0);
+    else scene = rotateLayer(scene, "rect", time, (r() - 0.5) * 1500);
+    const l = first(scene);
+    for (const track of [l.x, l.y, l.rotation, l.scale]) {
+      if (typeof track === "number") { assert.ok(Number.isFinite(track), `step ${i}`); continue; }
+      track.forEach((key, j) => { assert.ok(Number.isFinite(key.v) && Number.isFinite(key.t), `step ${i}`); if (j > 0) assert.ok(key.t > track[j - 1].t, `step ${i}: sorted`); });
+    }
+    for (const s of [sampleAt(l.scale, 0), sampleAt(l.scale, 1), sampleAt(l.scale, 2)]) assert.ok(s > 0, `step ${i}: scale stays positive`);
+  }
+});
 console.log(`\n${n} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

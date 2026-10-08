@@ -508,7 +508,7 @@ t("scheduleGain: one point is just a set; an empty curve touches nothing, not ev
   scheduleGain(none.param, [], 1);
   assert.deepEqual(none.calls, []);
 });
-t("scheduleGain: a non-finite startTime schedules nothing; non-finite points are skipped; negative times are floored at 0", () => {
+t("scheduleGain: a non-finite startTime schedules nothing; non-finite points are skipped; a start in the past is cut at context time 0", () => {
   for (const bad of [NaN, Infinity, -Infinity]) {
     const r = recorder();
     scheduleGain(r.param, [{ t: 0, gain: 1 }, { t: 1, gain: 0 }], bad);
@@ -520,9 +520,17 @@ t("scheduleGain: a non-finite startTime schedules nothing; non-finite points are
   const allBad = recorder();
   scheduleGain(allBad.param, [{ t: NaN, gain: 1 }, { t: 0, gain: NaN }], 1);
   assert.deepEqual(allBad.calls, []);
+  // Reviewer's correction: this used to expect set(0.2, 0) for startTime -1, i.e. the first point squashed onto time 0.
+  // But at context time 0 the project is already 1 s in, where the curve is 0.2 + 0.6 / 3 = 0.4 and still rising: the old
+  // schedule made the music 2x too quiet there and bent the whole ramp (steeper slope than the curve's).
   const neg = recorder();
   scheduleGain(neg.param, [{ t: 0, gain: 0.2 }, { t: 3, gain: 0.8 }], -1);
-  assert.deepEqual(neg.calls, [["cancel", 0], ["set", 0.2, 0], ["ramp", 0.8, 2]]);
+  assert.equal(neg.calls.length, 3);
+  assert.deepEqual(neg.calls[0], ["cancel", 0]);
+  assert.equal(neg.calls[1][0], "set");
+  nearly(neg.calls[1][1] as number, 0.4, 1e-12, "value at context time 0:");
+  assert.equal(neg.calls[1][2], 0);
+  assert.deepEqual(neg.calls[2], ["ramp", 0.8, 2]);
 });
 t("scheduleGain: replaying the recorded calls gives back gainAt() at every moment (preview and export agree)", () => {
   const curve = musicGainCurve(mp("1 3n 0.5 2n 2", { volume: 0.8, fadeIn: 2, fadeOut: 3 }))!;
@@ -537,6 +545,346 @@ t("scheduleGain: replaying the recorded calls gives back gainAt() at every momen
     return events[events.length - 1].value;
   };
   for (let x = -1; x <= 10; x += 0.01) nearly(replay(start + x), gainAt(curve, x), 1e-12, `project time ${x}`);
+});
+
+// ---------- adversarial review ----------
+// Written by the reviewer, not the author: each block attacks the engine from outside (symmetries, edit sessions, a WebAudio-strict
+// param, float-hostile numbers) instead of re-deriving the author's own formulas.
+
+/** Reverse the scenes and swap the fades: playing the video backwards must give the mirrored curve. */
+function mirror(p: MotionProject): MotionProject {
+  return { ...p, scenes: [...p.scenes].reverse().map((s, i) => ({ ...s, id: i + 1 })), music: p.music && { ...p.music, fadeIn: p.music.fadeOut, fadeOut: p.music.fadeIn } };
+}
+const renumber = (list: MotionScene[]): MotionScene[] => list.map((s, i) => ({ ...s, id: i + 1 }));
+/** What the editor's "split" does to a scene: two halves, the second one entering the same audio file further in. */
+function splitScene(p: MotionProject, index: number, at: number): MotionProject {
+  const s = p.scenes[index];
+  const second: MotionScene = { ...s, uid: `${s.uid}-b`, duration: s.duration - at, ...(s.audioUrl ? { audioOffset: (s.audioOffset ?? 0) + at } : {}) };
+  return { ...p, scenes: renumber([...p.scenes.slice(0, index), { ...s, duration: at }, second, ...p.scenes.slice(index + 1)]) };
+}
+
+t("review: gainAt is right-continuous at a step on the FIRST point too, and an interpolation never leaves [min, max] of its neighbours", () => {
+  assert.equal(gainAt([{ t: 0, gain: 0 }, { t: 0, gain: 1 }, { t: 2, gain: 1 }], 0), 1, "step on the first knot: the instant of the step has the new value");
+  assert.equal(gainAt([{ t: 0, gain: 0 }, { t: 0, gain: 1 }, { t: 2, gain: 1 }], -1e-9), 0);
+  assert.equal(gainAt([{ t: 1, gain: 0.3 }, { t: 1, gain: 0.9 }], 1), 0.9);
+  assert.equal(gainAt([{ t: 1, gain: 0.3 }, { t: 1, gain: 0.6 }, { t: 1, gain: 0.9 }, { t: 3, gain: 0.1 }], 1), 0.9, "three points on one instant");
+  // HTMLAudioElement.volume throws outside [0, 1]: rounding must never push an interpolation past its end points.
+  const rand = mulberry32(31);
+  for (let k = 0; k < 200_000; k++) {
+    const a = rand() < 0.25 ? 1 : rand(), b = rand() < 0.25 ? 1 : rand();
+    const t0 = rand() * 10, t1 = t0 + 1e-3 + rand() * 5;
+    const x = rand() < 0.3 ? t1 - (t1 - t0) * 1e-15 * rand() : t0 + rand() * (t1 - t0);
+    const g = gainAt([{ t: t0, gain: a }, { t: t1, gain: b }], x);
+    assert.ok(g >= Math.min(a, b) && g <= Math.max(a, b), `gainAt(${a} -> ${b}, ${x}) = ${g}`);
+  }
+});
+t("review: a project whose scene lengths add up to Infinity gives one silent finite point, not a curve ending at t = Infinity", () => {
+  const huge = proj([scene(0, 1e308, true), scene(1, 1e308, true)], music({ fadeIn: 1, fadeOut: 1 }));
+  assert.deepEqual(musicGainCurve(huge), [{ t: 0, gain: 0 }]);
+});
+
+// ---------- review: merge rule on the real grid ----------
+
+t("review: on the 30 fps grid 11 frames of silence merge two narrations and 12 frames (0.4 s) do not, wherever they sit in the video", () => {
+  for (const before of [0, 1, 3, 50]) for (let frames = 1; frames <= 24; frames++) {
+    const list: MotionScene[] = [];
+    for (let i = 0; i < before; i++) list.push(scene(list.length, 91 / 30)); // silent scenes: the sums at the gap carry their rounding error
+    list.push(scene(list.length, 61 / 30, true), scene(list.length, frames / 30), scene(list.length, 47 / 30, true));
+    assert.equal(narrationIntervals(proj(list)).length === 1, frames < 12, `${before} scenes before, ${frames} frames of silence`);
+  }
+});
+t("review: the merge threshold is 0.4 s and not a hair either way", () => {
+  assert.equal(narrationIntervals(proj(scenes("2n 0.3999 2n"))).length, 1);
+  assert.equal(narrationIntervals(proj(scenes("2n 0.4001 2n"))).length, 2);
+});
+t("review: a gap of 0.4 s to 0.5 s is not merged: the two ramps (limited to half the gap) meet at full volume in the middle", () => {
+  const c = musicGainCurve(mp("2n 0.4 2n 1", { volume: 1 }));
+  assertValid(c, 5.4);
+  nearly(gainAt(c!, 2), 0.3, 1e-9, "end of the first voice");
+  nearly(gainAt(c!, 2.2), 1, 1e-9, "middle of the gap: back to full volume for one instant");
+  nearly(gainAt(c!, 2.4), 0.3, 1e-9, "start of the second voice");
+  nearly(gainAt(c!, 2.1), 0.65, 1e-9, "halfway down the post-ramp of the first voice");
+  nearly(gainAt(c!, 2.3), 0.65, 1e-9, "halfway down the pre-ramp of the second voice");
+});
+
+// ---------- review: symmetries and editor operations ----------
+
+t("review: mirror symmetry - the reversed video with swapped fades gives the reversed curve", () => {
+  const rand = mulberry32(777);
+  let compared = 0;
+  for (let k = 0; k < 300; k++) {
+    const { project, duckGain, ramp } = randomCase(rand);
+    const total = projectDuration(project);
+    const forward = musicGainCurve(project, duckGain, ramp)!;
+    const backward = musicGainCurve(mirror(project), duckGain, ramp)!;
+    assertValid(backward, projectDuration(mirror(project)));
+    for (let x = 0; x <= total; x += 0.01) { nearly(gainAt(forward, x), gainAt(backward, total - x), 2e-4 + 1e-9, `project ${k}, t=${x}`); compared++; }
+  }
+  assert.ok(compared > 100_000);
+});
+t("review: splitting a scene changes neither the music curve nor the narration intervals, and the clips tile the same audio", () => {
+  const rand = mulberry32(2024);
+  let narratedSplits = 0;
+  for (let k = 0; k < 300; k++) {
+    const { project, duckGain, ramp } = randomCase(rand);
+    const index = Math.floor(rand() * project.scenes.length);
+    const s = project.scenes[index];
+    if (s.duration < 0.2) continue;
+    const at = Math.round((0.05 + rand() * (s.duration - 0.1)) * 1000) / 1000;
+    const cut = splitScene(project, index, at);
+    const total = projectDuration(project);
+    const a = musicGainCurve(project, duckGain, ramp)!;
+    const b = musicGainCurve(cut, duckGain, ramp)!;
+    for (let x = 0; x <= total; x += 0.01) nearly(gainAt(a, x), gainAt(b, x), 2e-4 + 1e-9, `project ${k}, t=${x}`);
+    const before = narrationIntervals(project), after = narrationIntervals(cut);
+    assert.equal(after.length, before.length, "the same stretches of narration");
+    before.forEach((iv, i) => {
+      nearly(after[i].start, iv.start, 1e-9, "start");
+      nearly(after[i].end, iv.end, 1e-9, "end");
+      assert.equal(after[i].sceneIndex, iv.sceneIndex > index ? iv.sceneIndex + 1 : iv.sceneIndex, "scenes after the cut moved one place");
+    });
+    if (s.audioUrl) {
+      narratedSplits++;
+      const clips = sceneAudioSchedule(cut).filter((c) => c.sceneIndex === index || c.sceneIndex === index + 1);
+      assert.equal(clips.length, 2);
+      nearly(clips[0].startAt + clips[0].length, clips[1].startAt, 1e-9, "the second half starts where the first stops");
+      nearly(clips[0].offset + clips[0].length, clips[1].offset, 1e-9, "and plays the audio from where the first stopped");
+      nearly(clips[0].length + clips[1].length, s.duration, 1e-9, "no audio lost or repeated");
+    }
+  }
+  assert.ok(narratedSplits > 50, `${narratedSplits} narrated splits exercised`);
+});
+t("review: away from every narration the music is untouched, inside it is ducked, and ducking never raises the volume", () => {
+  const rand = mulberry32(31337);
+  let outside = 0, inside = 0;
+  for (let k = 0; k < 300; k++) {
+    const { project, duckGain, ramp } = randomCase(rand);
+    const m = project.music as Music;
+    const total = projectDuration(project);
+    const curve = musicGainCurve(project, duckGain, ramp)!;
+    const intervals = narrationIntervals(project);
+    const reach = Math.max(ramp, 0.005);
+    const lowered = Math.min(1, Math.max(0, duckGain));
+    for (let x = 0; x <= total; x += 0.01) {
+      const distance = intervals.reduce((best, iv) => Math.min(best, x < iv.start ? iv.start - x : x > iv.end ? x - iv.end : 0), Infinity);
+      const fade = refFade(m, total, x);
+      const g = gainAt(curve, x);
+      if (!m.duck) { nearly(g, fade, 1e-9, `project ${k}, t=${x}: no ducking`); continue; }
+      assert.ok(g <= fade + 1e-4 + 1e-9, `project ${k}, t=${x}: ducking raised the volume (${g} > ${fade})`);
+      assert.ok(g >= fade * lowered - 1e-4 - 1e-9, `project ${k}, t=${x}: ducked below duckGain (${g} < ${fade * lowered})`);
+      if (distance > reach + 1e-9) { outside++; nearly(g, fade, 1e-9, `project ${k}, t=${x}: far from every voice`); }
+      if (distance === 0) { inside++; nearly(g, fade * lowered, 1e-9, `project ${k}, t=${x}: under a voice`); }
+    }
+  }
+  assert.ok(outside > 5000 && inside > 5000, `${outside} samples far from a voice, ${inside} under one`);
+});
+
+// An editing session: split, delete, move, retime, toggle narration, insert silence, change the music - and after EVERY step the
+// engine's three views of the same project must still agree.
+function checkProject(p: MotionProject, label: string) {
+  deepFreeze(p);
+  const total = projectDuration(p);
+  const intervals = narrationIntervals(p);
+  const clips = sceneAudioSchedule(p);
+  intervals.forEach((iv, i) => {
+    assert.ok(iv.start >= 0 && iv.end > iv.start && iv.end <= total + 1e-9, `${label}: interval ${i} lies in the video`);
+    if (i > 0) assert.ok(iv.start - intervals[i - 1].end >= 0.4 - 1e-8, `${label}: intervals ${i - 1} and ${i} are at least 0.4 s apart`);
+  });
+  assert.deepEqual(clips.map((c) => c.sceneIndex), p.scenes.flatMap((s, i) => (s.audioUrl && s.duration > 0 ? [i] : [])), `${label}: one clip per narrated scene`);
+  const owned = intervals.map(() => [] as typeof clips);
+  for (const c of clips) {
+    const k = intervals.findIndex((iv) => c.startAt >= iv.start - 1e-9 && c.startAt + c.length <= iv.end + 1e-9);
+    assert.ok(k >= 0, `${label}: clip of scene ${c.sceneIndex} is inside an interval`);
+    owned[k].push(c);
+  }
+  intervals.forEach((iv, k) => {
+    const mine = owned[k];
+    assert.ok(mine.length > 0, `${label}: interval ${k} has clips`);
+    nearly(mine[0].startAt, iv.start, 1e-9, `${label}: interval ${k} starts with its first clip`);
+    nearly(mine[mine.length - 1].startAt + mine[mine.length - 1].length, iv.end, 1e-9, `${label}: interval ${k} ends with its last clip`);
+    assert.equal(mine[0].sceneIndex, iv.sceneIndex, `${label}: interval ${k} names its first scene`);
+    for (let j = 1; j < mine.length; j++) assert.ok(mine[j].startAt - (mine[j - 1].startAt + mine[j - 1].length) < 0.4, `${label}: clips of interval ${k} are less than 0.4 s apart`);
+  });
+  const curve = musicGainCurve(p);
+  if (!p.music) assert.equal(curve, null, `${label}: no music, no curve`);
+  else {
+    assertValid(curve, total);
+    assert.deepEqual(musicGainCurve(p), curve, `${label}: same project, same curve`);
+  }
+  assert.deepEqual(narrationIntervals(p), intervals);
+  assert.deepEqual(sceneAudioSchedule(p), clips);
+}
+t("review: after every step of 40 random editing sessions (split, delete, move, retime, narration on/off, silence, music) the intervals, clips and curve still agree", () => {
+  const rand = mulberry32(8675309);
+  const pickIndex = (p: MotionProject) => Math.floor(rand() * p.scenes.length);
+  let steps = 0;
+  for (let session = 0; session < 40; session++) {
+    let p = randomCase(rand).project;
+    checkProject(p, `session ${session} start`);
+    for (let step = 0; step < 60; step++) {
+      const op = Math.floor(rand() * 8);
+      const i = pickIndex(p);
+      const s = p.scenes[i];
+      let label = "";
+      switch (op) {
+        case 0: { // split
+          if (s.duration < 0.2) continue;
+          p = splitScene(p, i, Math.round((0.05 + rand() * (s.duration - 0.1)) * 1000) / 1000);
+          label = "split";
+          break;
+        }
+        case 1: // delete (never the last scene)
+          if (p.scenes.length < 2) continue;
+          p = { ...p, scenes: renumber(p.scenes.filter((_, j) => j !== i)) };
+          label = "delete";
+          break;
+        case 2: { // move
+          const rest = p.scenes.filter((_, j) => j !== i);
+          const to = Math.floor(rand() * (rest.length + 1));
+          p = { ...p, scenes: renumber([...rest.slice(0, to), s, ...rest.slice(to)]) };
+          label = "move";
+          break;
+        }
+        case 3: // retime, in tenths like the timeline does, down to very short
+          p = { ...p, scenes: p.scenes.map((x, j) => (j === i ? { ...x, duration: Math.max(0.1, Math.round(rand() * 400) / 10) } : x)) };
+          label = "retime";
+          break;
+        case 4: { // narration on/off
+          p = { ...p, scenes: p.scenes.map((x, j) => (j === i ? { ...s, audioUrl: s.audioUrl ? undefined : VOICE } : x)) };
+          label = "toggle narration";
+          break;
+        }
+        case 5: // insert silence
+          p = { ...p, scenes: renumber([...p.scenes.slice(0, i), scene(0, Math.round((0.1 + rand() * 2) * 100) / 100), ...p.scenes.slice(i)].map((x, j) => ({ ...x, uid: `s${session}-${step}-${j}` }))) };
+          label = "insert silence";
+          break;
+        case 6: // music settings
+          p = { ...p, music: p.music && { ...p.music, volume: rand(), fadeIn: rand() * 8, fadeOut: rand() * 8, duck: rand() < 0.7 } };
+          label = "music settings";
+          break;
+        default: // music removed / added back
+          p = { ...p, music: p.music ? null : music({ fadeIn: 1, fadeOut: 2 }) };
+          label = "music on/off";
+      }
+      steps++;
+      checkProject(p, `session ${session} step ${step} (${label})`);
+    }
+  }
+  assert.ok(steps > 1500, `${steps} steps checked`);
+});
+
+t("review: a very long project (3000 scenes) still gives a valid, compact curve", () => {
+  const list = Array.from({ length: 3000 }, (_, i) => scene(i, 1.5 + (i % 7), i % 3 !== 0));
+  const p = proj(list, music({ fadeIn: 3, fadeOut: 3 }));
+  const c = musicGainCurve(p);
+  assertValid(c, projectDuration(p));
+  assert.ok(c!.length < 3000 * 3, `${c!.length} points`);
+  const intervals = narrationIntervals(p);
+  assert.ok(intervals.length > 0 && intervals.length <= 1500);
+  assert.equal(sceneAudioSchedule(p).length, 2000);
+});
+
+// ---------- review: musicLoopPlan on hostile numbers ----------
+
+t("review: musicLoopPlan keeps the first pass however short the video, and drops only trailing rounding noise", () => {
+  assert.deepEqual(musicLoopPlan(10, 1e-7), [{ at: 0, offset: 0, length: 1e-7 }], "a file longer than the video: one pass of the video's length");
+  assert.deepEqual(musicLoopPlan(5e-324, 5e-324), [{ at: 0, offset: 0, length: 5e-324 }]);
+  assert.deepEqual(musicLoopPlan(2e-6, 1e-6), [{ at: 0, offset: 0, length: 1e-6 }]);
+  assert.equal(musicLoopPlan(2e-6, 4e-6 + 1e-7).length, 2, "a trailing pass of 0.1 microsecond is noise");
+});
+t("review: musicLoopPlan on decimal durations gives exactly the expected number of passes, tiling the video", () => {
+  for (let i = 1; i <= 80; i++) for (let k = 1; k <= 30; k++) {
+    const duration = i / 20, total = (k * i) / 20; // a file of i/20 s looped k times: 0.15 x 3 = 0.44999999999999996 is the kind of trap
+    const plan = musicLoopPlan(duration, total);
+    assert.equal(plan.length, k, `${duration} s file for ${total} s`);
+    nearly(plan.reduce((sum, s) => sum + s.length, 0), total, 1e-9, `${duration} s file for ${total} s: covered:`);
+    plan.forEach((s, j) => {
+      assert.ok(s.length > 0 && s.length <= duration, "pass length");
+      if (j > 0) nearly(s.at, plan[j - 1].at + plan[j - 1].length, 1e-9, "no gap and no overlap");
+    });
+  }
+  for (const [duration, total] of [[0.1, 0.3], [0.7, 2.1], [0.3, 0.9], [1.1, 3.3], [1 / 3, 1], [0.6, 1.8], [2.2, 6.6]]) assert.equal(musicLoopPlan(duration, total).length, Math.round(total / duration), `${duration} / ${total}`);
+});
+t("review: musicLoopPlan at the 10 000-pass limit", () => {
+  const plan = musicLoopPlan(0.5, 5000);
+  assert.equal(plan.length, 10_000);
+  assert.equal(plan[9999].at, 4999.5);
+  assert.equal(plan[9999].length, 0.5);
+  assert.deepEqual(musicLoopPlan(0.5, 5000.5), [], "one pass over the limit plans nothing");
+});
+
+// ---------- review: scheduleGain against a param as strict as WebAudio ----------
+
+interface ParamEvent { kind: "set" | "ramp"; value: number; time: number }
+/** Throws what an AudioParam throws (RangeError on a negative or non-finite time or value) and keeps the events for replay. */
+function strictParam() {
+  const events: ParamEvent[] = [];
+  const cancels: number[] = [];
+  const check = (value: number, time: number) => {
+    if (!Number.isFinite(value)) throw new RangeError(`value ${value}`);
+    if (!Number.isFinite(time) || time < 0) throw new RangeError(`time ${time}`);
+  };
+  const param: GainParam = {
+    cancelScheduledValues: (time) => { check(0, time); cancels.push(time); },
+    setValueAtTime: (value, time) => { check(value, time); events.push({ kind: "set", value, time }); },
+    linearRampToValueAtTime: (value, time) => { check(value, time); events.push({ kind: "ramp", value, time }); },
+  };
+  return { events, cancels, param };
+}
+/** The value an AudioParam has at `time`: the last event at or before it, then a straight line to the next one when that is a ramp. */
+function valueAt(events: ParamEvent[], time: number): number {
+  let j = -1;
+  events.forEach((e, i) => { if (e.time <= time) j = i; });
+  assert.ok(j >= 0, `no event at or before ${time}`);
+  if (j === events.length - 1) return events[j].value;
+  const [a, b] = [events[j], events[j + 1]];
+  return b.kind === "ramp" ? a.value + ((b.value - a.value) * (time - a.time)) / (b.time - a.time) : a.value;
+}
+
+t("review: scheduleGain starting in the past keeps the curve's real shape from context time 0 on", () => {
+  const curve: GainPoint[] = [{ t: 0, gain: 0 }, { t: 2, gain: 1 }, { t: 6, gain: 1 }, { t: 8, gain: 0 }];
+  const half = recorder();
+  scheduleGain(half.param, curve, -1); // the project is 1 s in when the context starts: still fading in, at 0.5
+  assert.deepEqual(half.calls, [["cancel", 0], ["set", 0.5, 0], ["ramp", 1, 1], ["ramp", 1, 5], ["ramp", 0, 7]]);
+  const exactly = recorder();
+  scheduleGain(exactly.param, curve, -2); // a point lands exactly on context time 0: no extra point
+  assert.deepEqual(exactly.calls, [["cancel", 0], ["set", 1, 0], ["ramp", 1, 4], ["ramp", 0, 6]]);
+  const over = recorder();
+  scheduleGain(over.param, curve, -100); // the whole curve is over: its last value holds
+  assert.deepEqual(over.calls, [["cancel", 0], ["set", 0, 0]]);
+  const end = recorder();
+  scheduleGain(end.param, curve, -8);
+  assert.deepEqual(end.calls, [["cancel", 0], ["set", 0, 0]]);
+  const zero = recorder();
+  scheduleGain(zero.param, curve, -0);
+  assert.deepEqual(zero.calls.map((c) => c[0]), ["cancel", "set", "ramp", "ramp", "ramp"]);
+});
+t("review: against a strict param, 150 random curves and any start (past, present, future) never throw and replay gainAt() exactly", () => {
+  const rand = mulberry32(4242);
+  for (let k = 0; k < 150; k++) {
+    const { project, duckGain, ramp } = randomCase(rand);
+    const curve = musicGainCurve(project, duckGain, ramp)!;
+    const total = projectDuration(project);
+    const startTime = [0, -0, rand() * 30, -rand() * total, -total, -total - 5, -1e9, 1e6 + rand(), (rand() - 0.5) * 80][k % 9];
+    const { events, cancels, param } = strictParam();
+    scheduleGain(param, curve, startTime);
+    assert.ok(events.length >= 1 && events[0].kind === "set", "starts with a set");
+    assert.ok(events.slice(1).every((e) => e.kind === "ramp"), "then ramps only");
+    assert.deepEqual(cancels, [events[0].time], "one cancel, at the first event");
+    for (let i = 1; i < events.length; i++) assert.ok(events[i].time >= events[i - 1].time, `event ${i} is not earlier than event ${i - 1}`);
+    const tol = Math.abs(startTime) > 1e5 ? 1e-4 : 1e-9; // 1e6 + t has no room for a millisecond fraction of a ramp
+    for (let time = Math.max(0, startTime); time <= startTime + total + 1; time += 0.013) nearly(valueAt(events, time), gainAt(curve, time - startTime), tol, `curve ${k}, start ${startTime}, context time ${time}:`);
+  }
+});
+t("review: scheduleGain and gainAt accept a deep-frozen curve and leave it alone", () => {
+  const curve = deepFreeze(musicGainCurve(mp("1 3n 2", { fadeIn: 1, fadeOut: 1 }))!);
+  const before = JSON.stringify(curve);
+  gainAt(curve, 2.3);
+  const a = recorder(), b = recorder();
+  scheduleGain(a.param, curve, 1);
+  scheduleGain(b.param, curve, -2);
+  assert.ok(a.calls.length === curve.length + 1 && b.calls.length >= 2);
+  assert.equal(JSON.stringify(curve), before);
 });
 
 console.log(`\n${n} passed, ${failed} failed`);

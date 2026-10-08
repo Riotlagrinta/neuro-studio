@@ -179,13 +179,14 @@ function duckEnvelope(intervals: readonly NarrationInterval[], total: number, ga
  * when they are longer than the video), times `duckGain` inside the narration intervals when `music.duck` is on.
  * It starts at t = 0, ends at t = total and has strictly increasing t. It is exact at every point and within
  * 1e-4 between them (see CURVE_TOLERANCE). Unusable numbers never throw: NaN volume or fades are 0, values are
- * clamped to their range, a video with no duration yields one silent point.
+ * clamped to their range, a video with no duration (or one so long that its length overflows) yields one silent point.
  */
 export function musicGainCurve(project: MotionProject, duckGain: number = DEFAULT_DUCK_GAIN, ramp: number = DEFAULT_RAMP): GainPoint[] | null {
   const { music } = project;
   if (!music) return null;
   const { spans, total } = timeline(project);
-  if (total <= 0) return [{ t: 0, gain: 0 }];
+  // Finite scene durations can still add up to Infinity: a curve ending at t = Infinity is no curve (scheduleGain would drop it).
+  if (!(total > 0) || !Number.isFinite(total)) return [{ t: 0, gain: 0 }];
 
   const fade = fadeEnvelope(music, total);
   const lowered = Number.isNaN(duckGain) ? DEFAULT_DUCK_GAIN : clamp(duckGain, 0, 1);
@@ -214,14 +215,17 @@ export function musicGainCurve(project: MotionProject, duckGain: number = DEFAUL
 
 /**
  * Linear interpolation of a curve (sorted by t) at time t, clamped to its first and last points, 0 for an empty
- * curve. Two points sharing a t make a step. A NaN time reads as the start.
+ * curve. Two points sharing a t make a step, and the instant of the step already has the new value (right-continuous,
+ * which is also what an AudioParam does with a ramp that lands on the time of the previous event). A NaN time reads
+ * as the start.
  */
 export function gainAt(curve: readonly GainPoint[], t: number): number {
   const n = curve.length;
   if (n === 0) return 0;
-  if (!(t > curve[0].t)) return curve[0].gain;
+  if (!(t >= curve[0].t)) return curve[0].gain;
   if (t >= curve[n - 1].t) return curve[n - 1].gain;
-  // Invariant: curve[lo].t <= t < curve[hi].t, so the span is never zero.
+  // Invariant: curve[lo].t <= t < curve[hi].t, so the span is never zero. With t on the first point(s) the search
+  // settles on the LAST point sharing that t, hence the right-continuity.
   let lo = 0;
   let hi = n - 1;
   while (hi - lo > 1) {
@@ -260,8 +264,9 @@ export function musicLoopPlan(musicDuration: number, total: number): LoopSegment
     // i * duration, not a running sum: no drift over thousands of passes.
     const at = i * musicDuration;
     const length = Math.min(musicDuration, total - at);
-    // total / duration can round up to one pass too many (1.1 / 0.1): that pass would last 0 s.
-    if (length > LOOP_EPS) segments.push({ at, offset: 0, length });
+    // total / duration can round up to one pass too many (1.1 / 0.1): that pass would last 0 s. Only a TRAILING
+    // pass can be noise: the first one is the whole plan of a (absurdly) short video and must stay.
+    if (i === 0 || length > LOOP_EPS) segments.push({ at, offset: 0, length });
   }
   return segments;
 }
@@ -270,14 +275,20 @@ export function musicLoopPlan(musicDuration: number, total: number): LoopSegment
  * Writes a curve into an AudioParam, `startTime` being the AudioContext time at which project time 0 plays:
  * earlier automation from the first point on is cleared, the first point is set, every other point is a linear
  * ramp. An empty curve touches nothing. WebAudio throws on a non-finite or negative time or value, so points
- * that are not finite are skipped, times are floored at 0, and a non-finite `startTime` schedules nothing.
+ * that are not finite are skipped and a non-finite `startTime` schedules nothing.
+ *
+ * A negative `startTime` (the project is joined part-way, e.g. a seek into a fresh context whose clock has not
+ * reached the seek position yet) puts the start of the curve in the past. That part is cut off, not squashed
+ * onto time 0: the schedule begins at context time 0 with the gain the curve really has there.
  */
 export function scheduleGain(param: GainParam, curve: readonly GainPoint[], startTime: number): void {
   if (!Number.isFinite(startTime)) return;
-  const points = curve.filter((p) => Number.isFinite(p.t) && Number.isFinite(p.gain));
+  let points = curve.filter((p) => Number.isFinite(p.t) && Number.isFinite(p.gain));
   if (points.length === 0) return;
-  const when = (p: GainPoint) => Math.max(0, startTime + p.t);
-  param.cancelScheduledValues(when(points[0]));
-  param.setValueAtTime(points[0].gain, when(points[0]));
-  for (let i = 1; i < points.length; i++) param.linearRampToValueAtTime(points[i].gain, when(points[i]));
+  const cut = -startTime;
+  // Every kept point has t > cut, so startTime + t is positive (rounding cannot take a positive sum below 0).
+  if (cut > points[0].t) points = [{ t: cut, gain: gainAt(points, cut) }, ...points.filter((p) => p.t > cut)];
+  param.cancelScheduledValues(startTime + points[0].t);
+  param.setValueAtTime(points[0].gain, startTime + points[0].t);
+  for (let i = 1; i < points.length; i++) param.linearRampToValueAtTime(points[i].gain, startTime + points[i].t);
 }

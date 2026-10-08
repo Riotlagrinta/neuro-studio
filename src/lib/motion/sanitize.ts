@@ -24,9 +24,15 @@ import {
   type Transition,
 } from "./types";
 
-const MAX_SCENES = 20;
+/** Scenes kept from a model's reply. */
+const MAX_GENERATED_SCENES = 20;
+/** Scenes kept from a project we stored: the editor (split, duplicate, add) can go past what a model writes. */
+export const MAX_SCENES = 60;
 const MAX_LAYERS = 40;
-const MAX_KEYS = 16;
+// Direct manipulation writes a key at each new playhead position, so a session can pass what a model writes.
+const MAX_KEYS = 64;
+/** Shortest scene: what "split at the playhead" can produce. A model's scenes stay at 1.5 s or more. */
+export const MIN_STORED_SCENE = 0.3;
 const MAX_TIME = 120;
 
 type Obj = Record<string, unknown>;
@@ -248,12 +254,14 @@ export function ensureMediaLayer(scene: MotionScene, ratio: AspectRatio): Motion
 
 export function normalizeScene(raw: unknown, index: number, ratio: AspectRatio, keepAssets: boolean): MotionScene {
   const r = isObj(raw) ? raw : {};
-  const duration = num(r.duration, 1.5, 40, 5);
+  const duration = num(r.duration, keepAssets ? MIN_STORED_SCENE : 1.5, 40, 5);
   const voiceOver = str(r.voiceOver, 1200);
 
   const rawLayers = Array.isArray(r.layers) ? r.layers.slice(0, MAX_LAYERS) : [];
   let layers = rawLayers.map((l, i) => layer(l, i, ratio, duration)).filter((l): l is Layer => l !== null);
-  if (layers.length === 0) layers = fallbackLayers({ voiceOver, duration }, ratio);
+  // A stored scene whose layers were all removed (or cut away by a split) stays empty; legacy plans without a `layers` list get the default layout.
+  const emptiedOnPurpose = keepAssets && Array.isArray(r.layers) && r.layers.length === 0;
+  if (layers.length === 0 && !emptiedOnPurpose) layers = fallbackLayers({ voiceOver, duration }, ratio);
 
   const scene: MotionScene = {
     // A model can't choose identities; a stored project keeps the ones it was saved with.
@@ -299,7 +307,7 @@ function music(v: unknown): Music | null {
 export function normalizeProject(raw: unknown, fallbackRatio: AspectRatio, keepAssets: boolean): MotionProject | null {
   if (!isObj(raw)) return null;
   const ratio = oneOf(raw.ratio, ["16:9", "9:16"] as const, fallbackRatio);
-  const rawScenes = Array.isArray(raw.scenes) ? raw.scenes.slice(0, MAX_SCENES) : [];
+  const rawScenes = Array.isArray(raw.scenes) ? raw.scenes.slice(0, keepAssets ? MAX_SCENES : MAX_GENERATED_SCENES) : [];
   if (rawScenes.length === 0) return null;
   const palette = Array.isArray(raw.palette)
     ? raw.palette.slice(0, 8).map((c) => color(c, "")).filter(Boolean)
