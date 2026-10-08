@@ -2,6 +2,7 @@
 
 import { LogIn, LogOut } from "lucide-react";
 import { signInWithGoogle, signOutUser, type StudioCapabilities } from "@/app/actions";
+import CreditsBadge from "@/components/CreditsBadge";
 
 const button =
   "flex items-center gap-2 rounded-lg border border-[#2a2a2a] bg-[#141414] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-300 transition-colors hover:border-indigo-500 hover:text-white";
@@ -21,6 +22,7 @@ export default function AccountMenu({ auth }: { auth: StudioCapabilities["auth"]
 
   return (
     <div className="flex items-center gap-3">
+      {auth.allowed && <CreditsBadge />}
       {auth.user.image && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={auth.user.image} alt="" referrerPolicy="no-referrer" className="h-7 w-7 rounded-full border border-[#2a2a2a]" />

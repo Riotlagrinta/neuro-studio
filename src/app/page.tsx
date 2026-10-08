@@ -17,8 +17,10 @@ import {
   type GenerateInput,
   type StudioCapabilities,
 } from "./actions";
+import { getMyBalance } from "./billing-actions";
 import AccountMenu from "@/components/AccountMenu";
 import BriefForm, { type Gate } from "@/components/BriefForm";
+import { CREDITS_CHANGED } from "@/components/CreditsBadge";
 import EditToolbar from "@/components/EditToolbar";
 import LayerInspector, { type TransformProp } from "@/components/LayerInspector";
 import GeneratingTimeline from "@/components/GeneratingTimeline";
@@ -32,6 +34,7 @@ import { EXPORT_QUALITIES, exportProjectToWebm, type ExportQuality } from "@/lib
 import { ExportUnavailableError, exportProject } from "@/lib/motion/export-mp4";
 import { EXPORT_PRESETS, exportFilename } from "@/lib/motion/export-plan";
 import { buildSampleProject } from "@/lib/motion/sample";
+import { applyMarkup } from "@/lib/billing";
 import { generateCaptionLayer } from "@/lib/motion/captions";
 import { deleteLayer, snapToFrame, trimLayer, updateLayer } from "@/lib/motion/edit";
 import { addLayer, createLayer, duplicateLayer, MAX_LAYERS, reorderLayer, type LayerReorder, type NewLayerKind } from "@/lib/motion/layers";
@@ -113,6 +116,8 @@ export default function Home() {
   // Bumped whenever a different project replaces the current one: keeps per-project widget state (uploads…) from leaking across.
   const [epoch, setEpoch] = useState(0);
   const [toast, setToast] = useState("");
+  // Credits left (null = billing off or unknown). Refreshed after every paid action; the header badge listens to the same event.
+  const [balance, setBalance] = useState<number | null>(null);
   const [importing, setImporting] = useState<Record<string, ImportKind | null | undefined>>({});
   const [topic, setTopic] = useState("");
   const [caps, setCaps] = useState<StudioCapabilities | null>(null);
@@ -155,6 +160,7 @@ export default function Home() {
     getStudioCapabilities().then((c) => {
       if (!alive.current) return;
       setCaps(c);
+      setBalance(c.billing.enabled && c.auth.allowed ? c.billing.balance : null);
       const provider = c.voices.find((v) => v.available) ?? c.voices[0];
       if (provider) setVoice({ provider: provider.id, voiceId: provider.voices[0]?.id ?? "" });
       if (c.videoModels[0]) setVideoModelId(c.videoModels[0].id);
@@ -251,6 +257,7 @@ export default function Home() {
       setError("Connexion au serveur interrompue. Réessayez.");
     } finally {
       setGenerating(false);
+      refreshBalance();
     }
   };
 
@@ -350,6 +357,15 @@ export default function Home() {
 
   // ---- per-scene generation ----
 
+  /** A paid action has run (or failed and been refunded): read the balance again, here and in the header badge. */
+  const refreshBalance = () => {
+    if (!caps?.billing.enabled) return;
+    getMyBalance()
+      .then((b) => alive.current && setBalance(b))
+      .catch(() => {});
+    window.dispatchEvent(new Event(CREDITS_CHANGED));
+  };
+
   const runScene = async (uid: string, kind: BusyKind, job: () => Promise<{ error?: string }>) => {
     setBusy((b) => ({ ...b, [uid]: kind }));
     setNotes((n) => ({ ...n, [uid]: undefined }));
@@ -360,6 +376,7 @@ export default function Home() {
       if (alive.current) setNotes((n) => ({ ...n, [uid]: { text: "Connexion au serveur interrompue.", error: true } }));
     } finally {
       if (alive.current) setBusy((b) => ({ ...b, [uid]: undefined }));
+      refreshBalance();
     }
   };
 
@@ -658,12 +675,13 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Estimated prices, shown before anyone spends (same numbers as the per-user caps).
+  // Prices shown before anyone spends. With billing on they are what the user will be charged (cost x markup).
+  const price = (cost: number) => (caps?.billing.enabled ? applyMarkup(cost, caps.billing.markup) : cost);
   const videoEstimate = (s: MotionScene) =>
-    videoModel && project ? videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: videoQuality }) : 0;
+    videoModel && project ? price(videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: videoQuality })) : 0;
   const tierEstimate = (q: VideoQuality, s: MotionScene) =>
-    videoModel && project ? videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: q }) : 0;
-  const voiceEstimate = (s: MotionScene) => voiceCost(s.voiceOver.length, VOICE_RATES[voice.provider]);
+    videoModel && project ? price(videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: q })) : 0;
+  const voiceEstimate = (s: MotionScene) => price(voiceCost(s.voiceOver.length, VOICE_RATES[voice.provider]));
   const remaining = project && {
     voice: project.scenes.reduce((n, s) => n + (s.audioUrl || !s.voiceOver.trim() ? 0 : voiceEstimate(s)), 0),
     video: project.scenes.reduce((n, s) => n + (s.videoUrl || !s.visualPrompt.trim() ? 0 : videoEstimate(s)), 0),
@@ -887,6 +905,14 @@ export default function Home() {
                     Sous-titrer tout
                   </button>
                 </div>
+                {caps?.billing.enabled && balance !== null && (
+                  <p className={clsx("flex items-center justify-between font-mono text-[10px]", balance < 1 ? "text-amber" : "text-zinc-400")}>
+                    <span>Crédits : {balance <= 0 ? "0 $" : formatUsd(balance)}</span>
+                    <Link href="/credits" className="underline underline-offset-2 hover:text-white">
+                      {balance < 1 ? "Recharger" : "Détails"}
+                    </Link>
+                  </p>
+                )}
                 {remaining && (
                   <p className="font-mono text-[10px] text-zinc-500">
                     Tout générer : voix ≈ {formatUsd(remaining.voice)} · plans vidéo ≈ {formatUsd(remaining.video)}

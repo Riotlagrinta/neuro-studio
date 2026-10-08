@@ -9,7 +9,9 @@ import { signIn, signOut } from "@/auth";
 import cloudinary from "@/lib/cloudinary";
 import { claudeConfig, getAnthropic, type ClaudeTask } from "@/lib/anthropic-client";
 import { allowedEmail, authConfigured } from "@/lib/allowlist";
-import { authorize, claimUploadCheck, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
+import { authorize, claimUploadCheck, getBalance, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
+import { billingEnabled, billingMarkup } from "@/lib/billing";
+import type { BillingInfo } from "@/lib/billing-types";
 import { defaultVideoQuality, maxVideoSeconds, motionCost, refineCost, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { replicate } from "@/lib/replicate-client";
 import { buildPublicId, checkUploadRequest, isUploadKind, ownCloudinaryUrl, ownsPublicId, UPLOAD_KINDS, userSlug, type UploadKind } from "@/lib/upload";
@@ -188,6 +190,7 @@ export interface StudioCapabilities {
   videoDefaultQuality: VideoQuality;
   maxVideoSeconds: number;
   quota: { remaining: number; total: number } | null;
+  billing: BillingInfo;
 }
 
 export async function getStudioCapabilities(): Promise<StudioCapabilities> {
@@ -207,6 +210,11 @@ export async function getStudioCapabilities(): Promise<StudioCapabilities> {
     videoDefaultQuality: defaultVideoQuality(),
     maxVideoSeconds: maxVideoSeconds(),
     quota: allowed ? await elevenLabsQuota() : null,
+    billing: {
+      enabled: billingEnabled(),
+      balance: allowed && user && billingEnabled() ? ((await getBalance(user.id)) ?? 0) : 0,
+      markup: billingEnabled() ? billingMarkup() : 1,
+    },
   };
 }
 

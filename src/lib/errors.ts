@@ -16,6 +16,7 @@ const MESSAGES: Record<string, string> = {
   NON_CONNECTÉ: "Connectez-vous pour utiliser cette fonction.",
   ACCÈS_REFUSÉ: "Votre compte n'a pas accès : l'accès est sur invitation.",
   QUOTA_ATTEINTE: "Limite atteinte sur les dernières 24 h (nombre d'actions ou budget). Réessayez plus tard.",
+  SOLDE_INSUFFISANT: "Crédits insuffisants pour cette action. Rechargez votre compte pour continuer.",
   SERVICE_INDISPONIBLE: "Service momentanément indisponible : réessayez dans un instant. Cette tentative n'a pas été comptée.",
   PROJET_TROP_GROS: "Ce projet est trop volumineux pour être sauvegardé.",
   TROP_DE_PROJETS: "Vous avez atteint le nombre maximal de projets sauvegardés : supprimez-en avant d'en ajouter.",

@@ -5,6 +5,8 @@
 
 import { auth } from "@/auth";
 import { allowedEmail } from "./allowlist";
+import { billingEnabled, chargeFor, signupBonus } from "./billing";
+import type { LedgerReason, LedgerRow } from "./billing-types";
 import { dailyCostCapUsd } from "./pricing";
 import { CONFIRM_ATTEMPTS } from "./upload";
 
@@ -17,7 +19,7 @@ export interface SessionUser {
   image?: string | null;
 }
 
-export type AccessError = "NON_CONNECTÉ" | "ACCÈS_REFUSÉ" | "QUOTA_ATTEINTE" | "SERVICE_INDISPONIBLE";
+export type AccessError = "NON_CONNECTÉ" | "ACCÈS_REFUSÉ" | "QUOTA_ATTEINTE" | "SOLDE_INSUFFISANT" | "SERVICE_INDISPONIBLE";
 
 /**
  * Actions of each kind allowed per user over a rolling 24 hours.
@@ -46,6 +48,9 @@ export async function requireUser(): Promise<{ ok: true; user: SessionUser } | {
  * Reserves one action of `kind` costing about `estimatedCostUsd`, optionally tagged with an external id `ref`.
  * Checking the limits and recording the event happen in one atomic call (reserve_usage, db/schema.sql: it locks the
  * user first, so parallel requests cannot all pass the check). Call `refund` if the provider then fails.
+ *
+ * With billing on (BILLING_ENABLED=true) the same atomic call also charges the user's credits (reserve_charged) and
+ * refuses with SOLDE_INSUFFISANT when they do not cover the charged price; the daily limits and the cap still apply.
  */
 export async function authorize(
   kind: UsageKind,
@@ -57,6 +62,18 @@ export async function authorize(
   try {
     const { sql } = await import("./db");
     const cost = Math.max(0, estimatedCostUsd);
+    if (billingEnabled()) {
+      const rows = await sql`
+        SELECT out_event, out_status FROM reserve_charged(
+          ${who.user.id}::uuid, ${kind}::text, ${cost}::numeric, ${chargeFor(cost)}::numeric, ${DAILY_LIMITS[kind]}::int,
+          ${dailyCostCapUsd()}::numeric, ${ref ?? null}::text
+        )
+      `;
+      const row = rows[0];
+      if (!row) return { ok: false, error: "SERVICE_INDISPONIBLE" };
+      if (row.out_status === "ok" && row.out_event !== null && row.out_event !== undefined) return { ok: true, user: who.user, eventId: String(row.out_event) };
+      return { ok: false, error: row.out_status === "balance" ? "SOLDE_INSUFFISANT" : "QUOTA_ATTEINTE" };
+    }
     const rows = await sql`
       SELECT reserve_usage(
         ${who.user.id}::uuid, ${kind}::text, ${cost}::numeric, ${DAILY_LIMITS[kind]}::int, ${dailyCostCapUsd()}::numeric, ${ref ?? null}::text
@@ -75,7 +92,9 @@ export async function authorize(
 export async function refund(eventId: string): Promise<void> {
   try {
     const { sql } = await import("./db");
-    await sql`UPDATE usage_events SET refunded = true WHERE id = ${eventId}::bigint`;
+    // With billing on, the charge goes back to the user's credits too (exactly once, however often this is called).
+    if (billingEnabled()) await sql`SELECT refund_event(${eventId}::bigint)`;
+    else await sql`UPDATE usage_events SET refunded = true WHERE id = ${eventId}::bigint`;
   } catch (error) {
     console.error("refund failed:", error);
   }
@@ -129,8 +148,73 @@ export async function claimUploadCheck(userId: string, publicId: string): Promis
 export async function refundByRef(userId: string, ref: string): Promise<void> {
   try {
     const { sql } = await import("./db");
-    await sql`UPDATE usage_events SET refunded = true WHERE user_id = ${userId}::uuid AND ref = ${ref}::text`;
+    if (billingEnabled()) await sql`SELECT refund_by_ref(${userId}::uuid, ${ref}::text)`;
+    else await sql`UPDATE usage_events SET refunded = true WHERE user_id = ${userId}::uuid AND ref = ${ref}::text`;
   } catch (error) {
     console.error("refundByRef failed:", error);
+  }
+}
+
+/**
+ * Credits left. Grants the signup bonus first when one is configured (once per user: the ledger refuses a second
+ * ('bonus', 'signup') row). Null when the database cannot say: the caller must then refuse or hide, never guess.
+ */
+export async function getBalance(userId: string): Promise<number | null> {
+  try {
+    const { sql } = await import("./db");
+    const bonus = signupBonus();
+    if (bonus > 0) await sql`SELECT credit_user(${userId}::uuid, ${bonus}::numeric, 'bonus', 'signup')`;
+    const rows = await sql`SELECT credit_balance(${userId}::uuid) AS balance`;
+    const balance = Number(rows[0]?.balance);
+    return Number.isFinite(balance) ? balance : null;
+  } catch (error) {
+    console.error("getBalance failed:", error);
+    return null;
+  }
+}
+
+const USAGE_LABELS: Record<string, string> = {
+  motion: "Génération",
+  refine: "Retouche",
+  voice: "Voix",
+  image: "Image",
+  video: "Plan vidéo",
+  upload: "Envoi",
+};
+
+const REASON_LABELS: Record<LedgerReason, string> = {
+  topup: "Recharge",
+  bonus: "Crédit offert",
+  adjustment: "Ajustement",
+  debit: "Consommation",
+  refund: "Remboursement",
+};
+
+/** The user's latest ledger rows, newest first, with a short French label each. */
+export async function getLedger(userId: string, limit = 30): Promise<LedgerRow[]> {
+  try {
+    const { sql } = await import("./db");
+    const rows = await sql`
+      SELECT l.id, l.delta, l.reason, l.created_at, e.kind
+      FROM credit_ledger l
+      LEFT JOIN usage_events e ON l.reason IN ('debit', 'refund') AND e.id::text = l.ref
+      WHERE l.user_id = ${userId}::uuid
+      ORDER BY l.id DESC
+      LIMIT ${Math.min(100, Math.max(1, Math.trunc(limit)))}::int
+    `;
+    return rows.map((r) => {
+      const reason = r.reason as LedgerReason;
+      const what = reason === "debit" || reason === "refund" ? USAGE_LABELS[String(r.kind)] : undefined;
+      return {
+        id: String(r.id),
+        delta: Number(r.delta),
+        reason,
+        at: new Date(String(r.created_at)).toISOString(),
+        label: what ? (reason === "refund" ? `${what} (remboursé)` : what) : REASON_LABELS[reason],
+      };
+    });
+  } catch (error) {
+    console.error("getLedger failed:", error);
+    return [];
   }
 }

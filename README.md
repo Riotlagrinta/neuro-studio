@@ -107,6 +107,12 @@ ALLOWED_EMAILS=moi@exemple.com,collegue@exemple.com   # qui a le droit de géné
 MAX_VIDEO_SECONDS=60             # durée max d'une vidéo (10–120)
 DAILY_COST_CAP_USD=3             # dépense max estimée par utilisateur sur 24 h
 
+# --- Crédits prépayés (optionnel ; désactivés par défaut) ---
+BILLING_ENABLED=true             # chaque action est facturée sur le solde de l'utilisateur (voir « Crédits prépayés »)
+BILLING_MARKUP=1.5               # prix facturé = coût estimé x marge (>= 1, 1.5 par défaut)
+SIGNUP_BONUS_USD=0               # crédits offerts une seule fois à chaque nouvel utilisateur (0 par défaut)
+BILLING_TOPUP_INSTRUCTIONS="Envoyez le montant par Orange Money au ..., puis indiquez votre e-mail."   # affiché sur /credits
+
 # --- Coût / qualité (optionnel, valeurs par défaut ci-dessous) ---
 MOTION_MODEL=claude-opus-5-5     # mise en scène d'une vidéo entière (aussi : claude-opus-5, claude-sonnet-5-5)
 MOTION_EFFORT=high               # low | medium | high | xhigh | max
@@ -121,9 +127,9 @@ Chaque fonctionnalité est désactivée proprement si sa clé manque (l'interfac
 
 ### 2. Base de données
 
-Collez le contenu de [`db/schema.sql`](db/schema.sql) dans l'éditeur SQL de la console Neon. Il est **idempotent** (on peut le rejouer) et il ajoute à votre table `projects` existante la colonne `user_id`, plus les tables `users` et `usage_events` et la fonction `reserve_usage`.
+Collez le contenu de [`db/schema.sql`](db/schema.sql) dans l'éditeur SQL de la console Neon. Il est **idempotent** (on peut le rejouer) et il ajoute à votre table `projects` existante la colonne `user_id`, plus les tables `users` et `usage_events` et les fonctions `reserve_usage`, `reserve_charged`, `credit_user`, `refund_event`…
 
-> **À rejouer après chaque mise à jour du dépôt.** La fonction `reserve_usage` réserve les quotas de façon atomique : sans elle, toute action payante (génération, voix, image, vidéo, envoi) est refusée par sécurité. Elle remplace une requête qui laissait passer des appels simultanés au-delà des limites.
+> **À rejouer après chaque mise à jour du dépôt.** Les fonctions `reserve_usage` et `reserve_charged` réservent les quotas de façon atomique : sans elle, toute action payante (génération, voix, image, vidéo, envoi) est refusée par sécurité. Elle remplace une requête qui laissait passer des appels simultanés au-delà des limites.
 
 > Les projets créés **avant** les comptes n'ont pas de propriétaire : **personne ne les voit** tant qu'on ne les attribue pas. Pour vous les attribuer (après vous être connecté une première fois) :
 > ```sql
@@ -145,6 +151,28 @@ Console Google Cloud → *API et services* → *Identifiants* → *ID client OAu
 - **En cas de doute, on refuse** : si la base est injoignable, aucun appel payant ne part.
 - Auth.js v5 est encore en version **bêta** (version épinglée, `next-auth@5.0.0-beta.32`) et fait désormais partie de Better Auth. Sessions JWT, PKCE activé.
 - Limites connues : les projets enregistrés acceptent n'importe quelle URL `https` pour leurs médias (ils sont privés, mais il faudra la restreindre à notre Cloudinary avant d'ajouter le partage) ; la taille d'un envoi n'est contrôlée qu'après coup (le plafond réel est celui de votre offre Cloudinary).
+
+## Crédits prépayés
+
+« Chaque utilisateur paie ce qu'il utilise » : avec `BILLING_ENABLED=true`, chaque action payante (génération, retouche, voix, plan vidéo) est **débitée du solde de l'utilisateur** avant d'être exécutée, et **rendue** si elle échoue.
+
+- **1 crédit = 1 $ de prix facturé.** Le prix facturé est le coût estimé du fournisseur multiplié par `BILLING_MARKUP` (1,5 par défaut : la marge couvre les frais de paiement et les écarts d'estimation), arrondi *au-dessus* à 4 décimales. Le studio affiche ce prix avant chaque dépense ; le solde est dans l'en-tête, la page `/credits` donne l'historique.
+- **Atomique.** Vérification des quotas, du solde et débit se font en un seul appel SQL (`reserve_charged`, verrou par utilisateur) : 100 requêtes simultanées contre un solde qui couvre 10 actions en acceptent exactement 10 et le solde ne passe jamais sous zéro (testé sur un vrai PostgreSQL avec `pgbench`, voir `tests/billing.test.ts`). Les limites quotidiennes et le plafond `DAILY_COST_CAP_USD` restent un second filet.
+- **Grand livre en ajout seul** (`credit_ledger`) : on ne modifie ni ne supprime jamais une ligne, le solde est la somme. Un remboursement ou une recharge porte une référence unique : l'appliquer deux fois est sans effet.
+- **Sans `BILLING_ENABLED`**, rien ne change : liste d'invités et plafonds quotidiens seulement, aucune écriture dans le grand livre.
+- Avec la facturation, `OPEN_SIGNUP=true` devient raisonnable : un compte sans crédits ne peut rien dépenser (les actions gratuites, comme les images de fond, restent soumises aux quotas).
+
+### Recharger un compte (pour l'instant à la main)
+
+Il n'y a **pas encore de paiement en ligne** : l'utilisateur vous paie (Orange Money, MTN, Wave… selon votre pays), puis vous créditez son compte dans la console SQL Neon, avec l'identifiant de la transaction comme référence (ce qui empêche de créditer deux fois la même) :
+
+```sql
+SELECT credit_user((SELECT id FROM users WHERE email = 'client@exemple.com'), 5, 'topup', 'orange-TXN123');
+-- Solde d'un utilisateur :
+SELECT credit_balance((SELECT id FROM users WHERE email = 'client@exemple.com'));
+```
+
+`BILLING_TOPUP_INSTRUCTIONS` est le texte affiché sur la page `/credits` pour expliquer comment payer. Le paiement automatique (page de paiement du fournisseur, notification signée, crédit immédiat) est la prochaine étape : le grand livre est prêt à le recevoir (`credit_user` est la seule porte d'entrée de l'argent).
 
 ## Qualité et coûts
 
@@ -187,7 +215,7 @@ Pour réduire la facture : `MOTION_EFFORT` / `MOTION_MODEL` / `REFINE_*` (voir p
 
 ## Limites connues et prochaines étapes
 
-- **Pas encore de paiement.** Prévu : crédits prépayés (mobile money), débit atomique avant chaque action, remboursement en cas d'échec. `usage_events` et `reserve_usage` en sont la base.
+- **Paiement en ligne non encore branché.** Les crédits, le débit atomique et les remboursements sont en place ; la recharge se fait à la main (voir « Crédits prépayés »). Reste à brancher un fournisseur de paiement mobile money (page de paiement hébergée + notification signée) : il faut d'abord choisir le fournisseur et ouvrir un compte marchand chez lui.
 - **Vidéos de plus de 60 s** : non supportées proprement (12 scènes max à la génération, `max_tokens` partagé avec la réflexion, 300 s par action serveur). Il faudra générer en deux temps (plan puis scènes).
 - **Non vérifié sans clés ni navigateurs réels** : les appels réels à Anthropic, Cloudinary, ElevenLabs, OpenAI, Replicate et Google OAuth (vérifiés contre des simulations et les schémas publics), l'encodage H.264/AAC natif (testé avec Chrome 155 sous Linux, qui n'a pas d'encodeur AAC, et avec un polyfill), Safari et Firefox. À tester une fois sur Windows/macOS Chrome et Safari 26 avant de promettre le MP4 partout.
 - **Les sous-titres suivent la longueur des mots**, pas un alignement réel de la voix : la synchronisation peut dériver de quelques centaines de millisecondes.
