@@ -8,7 +8,15 @@ import { FRAMES, locate, projectDuration, sceneStart, type MotionProject } from 
 // Records the canvas + narration in real time with MediaRecorder (WebM).
 // Real time means a 30 s video takes 30 s to export, and the tab must stay visible.
 
-const OUTPUT_WIDTH = { "16:9": 1280, "9:16": 720 } as const;
+export type ExportQuality = "720p" | "1080p";
+export const EXPORT_QUALITIES: { id: ExportQuality; label: string }[] = [
+  { id: "720p", label: "HD 720p" },
+  { id: "1080p", label: "Full HD 1080p" },
+];
+
+// Length of the short side of the picture; the long side follows the aspect ratio.
+const SHORT_SIDE = { "720p": 720, "1080p": 1080 } as const;
+const BITRATE = { "720p": 8_000_000, "1080p": 14_000_000 } as const;
 const FPS = 30;
 
 function pickMimeType(): string | undefined {
@@ -19,12 +27,13 @@ function pickMimeType(): string | undefined {
 export async function exportProjectToWebm(
   project: MotionProject,
   onProgress: (fraction: number) => void,
-  signal?: AbortSignal,
+  { quality = "720p", signal }: { quality?: ExportQuality; signal?: AbortSignal } = {},
 ): Promise<Blob> {
   if (typeof MediaRecorder === "undefined") throw new Error("Ce navigateur ne supporte pas l'enregistrement vidéo.");
 
   const total = projectDuration(project);
-  const width = OUTPUT_WIDTH[project.ratio];
+  const short = SHORT_SIDE[quality];
+  const width = project.ratio === "16:9" ? Math.round((short * 16) / 9) : short;
   const frame = FRAMES[project.ratio];
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -67,7 +76,7 @@ export async function exportProjectToWebm(
   const stream = canvas.captureStream(FPS);
   destination.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
 
-  const recorder = new MediaRecorder(stream, { mimeType: pickMimeType(), videoBitsPerSecond: 8_000_000 });
+  const recorder = new MediaRecorder(stream, { mimeType: pickMimeType(), videoBitsPerSecond: BITRATE[quality] });
   const chunks: Blob[] = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
   const stopped = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));

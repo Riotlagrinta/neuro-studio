@@ -6,13 +6,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { signIn, signOut } from "@/auth";
 import cloudinary from "@/lib/cloudinary";
-import { getAnthropic, MOTION_MODEL } from "@/lib/anthropic-client";
+import { claudeConfig, getAnthropic, type ClaudeTask } from "@/lib/anthropic-client";
 import { allowedEmail, authConfigured } from "@/lib/allowlist";
 import { authorize, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
-import { maxVideoSeconds, motionCost, REFINE_COST, voiceCost } from "@/lib/pricing";
+import { defaultVideoQuality, maxVideoSeconds, motionCost, refineCost, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { replicate } from "@/lib/replicate-client";
-import { listVoiceProviders, synthesize, VOICE_COST_PER_1K_CHARS, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
-import { getVideoModel, VIDEO_MODELS } from "@/lib/video-models";
+import { listVoiceProviders, synthesize, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
+import { getVideoModel, videoCost, videoInput, VIDEO_MODELS, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import { projectRequest, sceneRequest, STYLES, systemPrompt, type StyleId } from "@/lib/motion/prompt";
 import { extractJson, normalizeProject, normalizeScene } from "@/lib/motion/sanitize";
 import type { AspectRatio, MotionProject, MotionScene } from "@/lib/motion/types";
@@ -38,20 +38,21 @@ export async function signOutUser() {
 }
 
 // ---------------------------------------------------------------------------
-// Motion design (Claude Opus)
+// Motion design (Claude: Opus for a whole video, Sonnet for a scene retouch — see anthropic-client.ts)
 // ---------------------------------------------------------------------------
 
-async function askOpus(system: string, user: string): Promise<{ text: string } | { error: string }> {
+async function askClaude(task: ClaudeTask, system: string, user: string): Promise<{ text: string } | { error: string }> {
   const client = getAnthropic();
   if (!client) return { error: "CLÉ_ANTHROPIC_MANQUANTE" };
+  const { model, effort } = claudeConfig(task);
   try {
     // Streaming: a full motion spec is a long output, and Opus may think before writing it.
     const message = await client.beta.messages
       .stream({
-        model: MOTION_MODEL,
+        model,
         max_tokens: 32000,
         thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
+        output_config: { effort },
         betas: ["server-side-fallback-2026-07-01"],
         fallbacks: "default", // if a safety classifier declines, Anthropic re-runs the request on a fallback model
         system,
@@ -86,10 +87,10 @@ export async function generateMotionProject(input: GenerateInput) {
   const style = STYLES.some((s) => s.id === input.style) ? input.style : "kinetic";
   const targetSeconds = Math.min(maxVideoSeconds(), Math.max(10, Math.round(Number(input.targetSeconds) || 30)));
 
-  const access = await authorize("motion", motionCost(targetSeconds));
+  const access = await authorize("motion", motionCost(targetSeconds, claudeConfig("generate").model));
   if (!access.ok) return { success: false as const, error: access.error };
 
-  const reply = await askOpus(systemPrompt(ratio, !!input.useMedia), projectRequest({ topic, style, targetSeconds, ratio }));
+  const reply = await askClaude("generate", systemPrompt(ratio, !!input.useMedia), projectRequest({ topic, style, targetSeconds, ratio }));
   if ("error" in reply) {
     await refund(access.eventId);
     return { success: false as const, error: reply.error };
@@ -121,14 +122,15 @@ export async function refineMotionScene(input: RefineInput) {
   const ratio = RATIOS.includes(input.ratio) ? input.ratio : "16:9";
   const index = Number.isInteger(input.index) ? input.index : 0;
 
-  const access = await authorize("refine", REFINE_COST);
+  const access = await authorize("refine", refineCost(claudeConfig("refine").model));
   if (!access.ok) return { success: false as const, error: access.error };
 
   const current = normalizeScene(input.scene, index, ratio, true);
   // Generated asset URLs mean nothing to the model; undefined fields are dropped by JSON.stringify.
   const forModel = { ...current, imageUrl: undefined, videoUrl: undefined, audioUrl: undefined };
 
-  const reply = await askOpus(
+  const reply = await askClaude(
+    "refine",
     systemPrompt(ratio, current.layers.some((l) => l.type === "media")),
     sceneRequest({
       title: String(input.title).slice(0, 120),
@@ -178,6 +180,7 @@ export interface StudioCapabilities {
   voices: VoiceProviderInfo[];
   videoAvailable: boolean;
   videoModels: { id: string; label: string; needsImage: boolean }[];
+  videoDefaultQuality: VideoQuality;
   maxVideoSeconds: number;
   quota: { remaining: number; total: number } | null;
 }
@@ -196,6 +199,7 @@ export async function getStudioCapabilities(): Promise<StudioCapabilities> {
     voices: await listVoiceProviders({ live: allowed }),
     videoAvailable: !!process.env.REPLICATE_API_TOKEN?.trim(),
     videoModels: VIDEO_MODELS.map(({ id, label, needsImage }) => ({ id, label, needsImage })),
+    videoDefaultQuality: defaultVideoQuality(),
     maxVideoSeconds: maxVideoSeconds(),
     quota: allowed ? await elevenLabsQuota() : null,
   };
@@ -238,7 +242,7 @@ export async function generateImage(prompt: string, ratio: AspectRatio = "16:9")
 export async function synthesizeVoice(text: string, provider: VoiceProviderId, voiceId: string) {
   const input = typeof text === "string" ? text.trim().slice(0, MAX_VOICE_CHARS) : "";
   if (!input) return { success: false as const, error: "TEXTE_VIDE" };
-  const rate = VOICE_COST_PER_1K_CHARS[provider];
+  const rate = VOICE_RATES[provider];
   if (rate === undefined) return { success: false as const, error: "FOURNISSEUR_INCONNU" };
 
   const access = await authorize("voice", voiceCost(input.length, rate));
@@ -283,6 +287,7 @@ export interface VideoJobInput {
   imageUrl?: string;
   ratio: AspectRatio;
   duration: number;
+  quality?: VideoQuality;
 }
 
 export async function startVideoJob(input: VideoJobInput) {
@@ -301,12 +306,13 @@ export async function startVideoJob(input: VideoJobInput) {
     imageUrl,
     ratio: RATIOS.includes(input.ratio) ? input.ratio : ("16:9" as AspectRatio),
     duration: Math.min(12, Math.max(1, Number(input.duration) || 5)),
+    quality: input.quality && VIDEO_QUALITIES.includes(input.quality) ? input.quality : defaultVideoQuality(),
   };
 
-  const access = await authorize("video", model.cost(request));
+  const access = await authorize("video", videoCost(model, request));
   if (!access.ok) return { success: false as const, error: access.error };
   try {
-    const prediction = await replicate.predictions.create({ model: model.slug, input: model.input(request) });
+    const prediction = await replicate.predictions.create({ model: model.slug, input: videoInput(model, request) });
     await tagEvent(access.eventId, prediction.id); // so only this user can poll (and collect) this job
     return { success: true as const, id: prediction.id };
   } catch (error) {

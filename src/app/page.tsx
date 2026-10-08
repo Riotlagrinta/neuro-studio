@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import { CheckCircle2, FileDown, History, Loader2, Save, Video } from "lucide-react";
 import Link from "next/link";
 import {
@@ -24,11 +25,13 @@ import MotionPlayer, { type MotionPlayerHandle } from "@/components/MotionPlayer
 import SceneCard, { type BusyKind } from "@/components/SceneCard";
 import Timeline, { type TimelineHandle } from "@/components/Timeline";
 import { explain } from "@/lib/errors";
-import { exportProjectToWebm } from "@/lib/motion/export";
+import { EXPORT_QUALITIES, exportProjectToWebm, type ExportQuality } from "@/lib/motion/export";
 import { buildSampleProject } from "@/lib/motion/sample";
 import { ensureMediaLayer } from "@/lib/motion/sanitize";
 import { projectDuration, type AspectRatio, type MotionProject, type MotionScene } from "@/lib/motion/types";
+import { formatUsd, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { exportScriptPdf } from "@/lib/script-pdf";
+import { getVideoModel, QUALITY_LABELS, videoCost, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import type { VoiceProviderId } from "@/lib/voice-providers";
 
 const STAGES = [
@@ -99,6 +102,8 @@ export default function Home() {
   const [bulk, setBulk] = useState<"voice" | "image" | null>(null);
   const [voice, setVoice] = useState<{ provider: VoiceProviderId; voiceId: string }>({ provider: "elevenlabs", voiceId: "" });
   const [videoModelId, setVideoModelId] = useState("seedance");
+  const [videoQuality, setVideoQuality] = useState<VideoQuality>("eco");
+  const [exportQuality, setExportQuality] = useState<ExportQuality>("720p");
   const [activeScene, setActiveScene] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -117,6 +122,7 @@ export default function Home() {
       const provider = c.voices.find((v) => v.available) ?? c.voices[0];
       if (provider) setVoice({ provider: provider.id, voiceId: provider.voices[0]?.id ?? "" });
       if (c.videoModels[0]) setVideoModelId(c.videoModels[0].id);
+      setVideoQuality(c.videoDefaultQuality);
     });
 
     const params = new URLSearchParams(window.location.search);
@@ -163,7 +169,7 @@ export default function Home() {
   const motionReady = canUse && !!caps?.motion;
   const providerInfo = caps?.voices.find((v) => v.id === voice.provider);
   const voiceReady = canUse && !!providerInfo?.available && !!voice.voiceId;
-  const videoModel = caps?.videoModels.find((m) => m.id === videoModelId);
+  const videoModel = getVideoModel(videoModelId);
 
   let gate: Gate;
   if (!caps) gate = { canCreate: false, message: null, showSignIn: false };
@@ -240,7 +246,7 @@ export default function Home() {
     setError("");
     setExportPct(0);
     try {
-      const blob = await exportProjectToWebm(project, (fraction) => setExportPct(Math.round(fraction * 100)));
+      const blob = await exportProjectToWebm(project, (fraction) => setExportPct(Math.round(fraction * 100)), { quality: exportQuality });
       const name = project.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "neuro-studio";
       download(blob, `${name}.webm`);
     } catch (e) {
@@ -305,7 +311,7 @@ export default function Home() {
     const { ratio } = project;
     const scene = project.scenes[index];
     return runScene(index, "video", async () => {
-      const start = await startVideoJob({ modelId: videoModelId, prompt: scene.visualPrompt, imageUrl: scene.imageUrl, ratio, duration: scene.duration });
+      const start = await startVideoJob({ modelId: videoModelId, prompt: scene.visualPrompt, imageUrl: scene.imageUrl, ratio, duration: scene.duration, quality: videoQuality });
       if (!start.success) return { error: start.error };
       setNotes((n) => ({ ...n, [index]: { text: "Plan vidéo en cours de génération (1 à 3 minutes)…", error: false } }));
       for (let attempt = 0; attempt < 150 && alive.current; attempt++) {
@@ -347,6 +353,17 @@ export default function Home() {
 
   const scene = project?.scenes[Math.min(activeScene, (project?.scenes.length ?? 1) - 1)];
   const sceneIndex = project ? Math.min(activeScene, project.scenes.length - 1) : 0;
+
+  // Estimated prices, shown before anyone spends (same numbers as the per-user caps).
+  const videoEstimate = (s: MotionScene) =>
+    videoModel && project ? videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: videoQuality }) : 0;
+  const tierEstimate = (q: VideoQuality, s: MotionScene) =>
+    videoModel && project ? videoCost(videoModel, { prompt: "", ratio: project.ratio, duration: s.duration, quality: q }) : 0;
+  const voiceEstimate = (s: MotionScene) => voiceCost(s.voiceOver.length, VOICE_RATES[voice.provider]);
+  const remaining = project && {
+    voice: project.scenes.reduce((n, s) => n + (s.audioUrl || !s.voiceOver.trim() ? 0 : voiceEstimate(s)), 0),
+    video: project.scenes.reduce((n, s) => n + (s.videoUrl || !s.visualPrompt.trim() ? 0 : videoEstimate(s)), 0),
+  };
 
   return (
     <div className="min-h-screen bg-ink text-cream selection:bg-pink/30">
@@ -439,6 +456,19 @@ export default function Home() {
               <button onClick={handleExportPdf} disabled={pdfBusy} className={toolButton}>
                 {pdfBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />} PDF
               </button>
+              <select
+                aria-label="Qualité d'export"
+                value={exportQuality}
+                onChange={(e) => setExportQuality(e.target.value as ExportQuality)}
+                disabled={exportPct !== null}
+                className="rounded-md border border-line-2 bg-panel-2 px-2 py-2 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-300 outline-none focus:border-accent disabled:opacity-40"
+              >
+                {EXPORT_QUALITIES.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
               <button
                 onClick={handleExportVideo}
                 disabled={exportPct !== null}
@@ -501,6 +531,27 @@ export default function Home() {
                     </option>
                   ))}
                 </select>
+                <div className="space-y-1.5">
+                  <p className="label">Qualité vidéo IA</p>
+                  <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Qualité vidéo IA">
+                    {VIDEO_QUALITIES.map((q) => (
+                      <button
+                        key={q}
+                        onClick={() => setVideoQuality(q)}
+                        aria-pressed={videoQuality === q}
+                        className={clsx(
+                          "rounded-md border px-1.5 py-1.5 text-center transition-colors",
+                          videoQuality === q ? "border-accent bg-accent/20 text-cream" : "border-line-2 bg-panel-2 text-zinc-500 hover:border-zinc-500 hover:text-zinc-200",
+                        )}
+                      >
+                        <span className="block font-mono text-[10px] font-semibold uppercase tracking-wider">{QUALITY_LABELS[q]}</span>
+                        <span className="block font-mono text-[9px] opacity-70">{videoModel?.tiers[q].detail}</span>
+                        <span className="block font-mono text-[9px] text-amber/90">≈ {formatUsd(tierEstimate(q, scene))}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="font-mono text-[9px] text-zinc-600">Prix pour cette scène ({scene.duration.toFixed(1)} s). Le prix réel dépend du fournisseur.</p>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <button onClick={() => generateAll("voice")} disabled={!voiceReady || bulk !== null} className={toolButton}>
                     {bulk === "voice" && <Loader2 className="h-3 w-3 animate-spin" />} Toutes les voix
@@ -509,6 +560,11 @@ export default function Home() {
                     {bulk === "image" && <Loader2 className="h-3 w-3 animate-spin" />} Tous les fonds
                   </button>
                 </div>
+                {remaining && (
+                  <p className="font-mono text-[10px] text-zinc-500">
+                    Tout générer : voix ≈ {formatUsd(remaining.voice)} · plans vidéo ≈ {formatUsd(remaining.video)}
+                  </p>
+                )}
                 {caps?.quota && providerInfo?.id === "elevenlabs" && (
                   <p className="font-mono text-[10px] text-zinc-600">{caps.quota.remaining.toLocaleString("fr-FR")} caractères ElevenLabs restants</p>
                 )}
@@ -528,6 +584,7 @@ export default function Home() {
                 videoReady={canUse && !!caps?.videoAvailable}
                 videoBlocked={!!videoModel?.needsImage && !scene.imageUrl}
                 motionReady={motionReady}
+                estimates={{ voice: formatUsd(voiceEstimate(scene)), image: formatUsd(0), video: formatUsd(videoEstimate(scene)) }}
                 onChange={(patch) => patchScene(sceneIndex, (s) => ({ ...s, ...patch }))}
                 onVoice={() => makeVoice(sceneIndex)}
                 onImage={() => makeImage(sceneIndex)}

@@ -1,6 +1,8 @@
 // Text-to-speech providers. Adding one = add an entry to PROVIDERS (server-side only).
 
-export type VoiceProviderId = "elevenlabs" | "openai";
+import { VOICE_RATES } from "./pricing";
+
+export type VoiceProviderId = keyof typeof VOICE_RATES;
 
 export interface VoiceOption {
   id: string;
@@ -21,9 +23,6 @@ const ELEVEN_VOICE_ID = /^[A-Za-z0-9]{10,40}$/;
 
 const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
 const OPENAI_MODEL = "gpt-4o-mini-tts";
-
-/** Estimated USD per 1,000 characters (see pricing.ts). OpenAI bills audio tokens: ~0.015$/min, rounded up. */
-export const VOICE_COST_PER_1K_CHARS: Record<VoiceProviderId, number> = { elevenlabs: 0.08, openai: 0.02 };
 
 const key = (name: string) => process.env[name]?.trim() || undefined;
 

@@ -21,6 +21,8 @@ interface Props {
   /** The selected video engine needs a scene image first (and there is none yet). */
   videoBlocked: boolean;
   motionReady: boolean;
+  /** Estimated price of each action for this scene, already formatted ("0,09 $"). */
+  estimates: { voice: string; image: string; video: string };
   onChange: (patch: Partial<MotionScene>) => void;
   onVoice: () => void;
   onImage: () => void;
@@ -30,6 +32,7 @@ interface Props {
 
 function Action({
   label,
+  hint,
   done,
   loading,
   disabled,
@@ -38,6 +41,8 @@ function Action({
   children,
 }: {
   label: string;
+  /** Estimated price shown under the label. */
+  hint?: string;
   done?: boolean;
   loading?: boolean;
   disabled?: boolean;
@@ -57,6 +62,7 @@ function Action({
     >
       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : done ? <Check className="h-4 w-4" /> : children}
       <span className="font-mono text-[10px] font-semibold uppercase tracking-wider">{label}</span>
+      {hint && <span className="font-mono text-[9px] normal-case tracking-normal opacity-70">{done ? "fait" : `≈ ${hint}`}</span>}
     </button>
   );
 }
@@ -72,6 +78,7 @@ export default function SceneCard({
   videoReady,
   videoBlocked,
   motionReady,
+  estimates,
   onChange,
   onVoice,
   onImage,
@@ -115,14 +122,15 @@ export default function SceneCard({
 
       <div className="space-y-4 p-4">
         <div className="flex gap-2">
-          <Action label="Voix" done={!!scene.audioUrl} loading={busy === "voice"} disabled={!voiceReady || !scene.voiceOver.trim()} onClick={onVoice}>
+          <Action label="Voix" hint={estimates.voice} done={!!scene.audioUrl} loading={busy === "voice"} disabled={!voiceReady || !scene.voiceOver.trim()} onClick={onVoice}>
             <Mic2 className="h-4 w-4" />
           </Action>
-          <Action label="Image" done={!!scene.imageUrl} loading={busy === "image"} disabled={!imageReady || !scene.visualPrompt.trim()} onClick={onImage}>
+          <Action label="Image" hint={estimates.image} done={!!scene.imageUrl} loading={busy === "image"} disabled={!imageReady || !scene.visualPrompt.trim()} onClick={onImage}>
             <ImageIcon className="h-4 w-4" />
           </Action>
           <Action
             label="Vidéo IA"
+            hint={estimates.video}
             done={!!scene.videoUrl}
             loading={busy === "video"}
             disabled={!videoReady || videoBlocked || !scene.visualPrompt.trim()}

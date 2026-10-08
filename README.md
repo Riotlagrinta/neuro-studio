@@ -55,7 +55,16 @@ ALLOWED_EMAILS=moi@exemple.com,collegue@exemple.com   # qui a le droit de géné
 # --- Limites (optionnel) ---
 MAX_VIDEO_SECONDS=60             # durée max d'une vidéo (10–120)
 DAILY_COST_CAP_USD=3             # dépense max estimée par utilisateur sur 24 h
+
+# --- Coût / qualité (optionnel, valeurs par défaut ci-dessous) ---
+MOTION_MODEL=claude-opus-5-5     # mise en scène d'une vidéo entière (aussi : claude-opus-5, claude-sonnet-5-5)
+MOTION_EFFORT=high               # low | medium | high | xhigh | max
+REFINE_MODEL=claude-sonnet-5-5   # retouche d'une scène : moitié moins cher qu'Opus
+REFINE_EFFORT=medium
+VIDEO_DEFAULT_QUALITY=eco        # qualité vidéo IA présélectionnée : eco | standard | premium
 ```
+
+Une valeur de modèle ou d'effort non reconnue est ignorée (avertissement dans les logs) et le défaut s'applique.
 
 Chaque fonctionnalité est désactivée proprement si sa clé manque (l'interface l'indique).
 
@@ -83,6 +92,18 @@ Console Google Cloud → *API et services* → *Identifiants* → *ID client OAu
 - Auth.js v5 est encore en version **bêta** (version épinglée, `next-auth@5.0.0-beta.32`) et fait désormais partie de Better Auth. Sessions JWT, PKCE activé.
 - Limite connue : deux requêtes strictement simultanées peuvent dépasser un quota d'une unité. Pour les crédits prépayés, le débit devra être atomique.
 
+## Qualité et coûts
+
+**Qualité vidéo IA**, au choix de l'utilisateur, avec le prix de chaque niveau affiché avant de dépenser (« Économique » est présélectionné) :
+
+| Niveau | Seedance 1 Lite | Wan 2.2 Fast |
+|---|---|---|
+| Économique | 480p — 0,018 $/s | 480p — 0,05 $ le clip |
+| Standard | 720p — 0,036 $/s | 720p — 0,11 $ |
+| Premium | **1080p** — 0,072 $/s | 720p à **30 images/s** — 0,145 $ |
+
+**Qualité d'export** : HD 720p ou **Full HD 1080p** (les titres et formes sont vectoriels : ils gagnent en netteté même si le plan vidéo reste en 480p). L'export se fait en temps réel dans le navigateur, en WebM.
+
 ## Coûts
 
 L'application utilise l'**API** d'Anthropic (facturation à l'usage). Un abonnement personnel Claude (Pro/Max) ne peut pas servir à alimenter un produit proposé à d'autres : Anthropic n'autorise pas les développeurs tiers à proposer une connexion claude.ai ou ses limites dans leurs produits. Ordres de grandeur (tarifs publics à vérifier) :
@@ -91,12 +112,14 @@ L'application utilise l'**API** d'Anthropic (facturation à l'usage). Un abonnem
 |---|---|---|
 | Claude Opus 5.5 (4 $ / 20 $ par million de tokens)¹ | ≈ 0,2 – 0,5 $ | ≈ 0,4 – 0,9 $ |
 | Voix ElevenLabs (0,08 $ / 1 000 caractères) | ≈ 0,08 $ | ≈ 0,16 $ |
-| Plans vidéo Seedance 720p (0,036 $/s), toutes les scènes | ≈ 2,16 $ | ≈ 4,32 $ |
+| Plans vidéo Seedance 480p, toutes les scènes | ≈ 1,08 $ | ≈ 2,16 $ |
+| Plans vidéo Seedance 720p, toutes les scènes | ≈ 2,16 $ | ≈ 4,32 $ |
+| Plans vidéo Seedance 1080p, toutes les scènes | ≈ 4,32 $ | ≈ 8,64 $ |
 | Plans vidéo Wan 720p (0,11 $ / clip), toutes les scènes | ≈ 1,32 $ | ≈ 2,64 $ |
 
-¹ Estimation (~180 tokens de spec par seconde de vidéo, plus la réflexion). La vidéo IA représente environ 85 à 90 % de la facture.
+¹ Estimation (~180 tokens de spec par seconde de vidéo, plus la réflexion). La vidéo IA représente la grande majorité de la facture, d'autant plus aux niveaux Standard et Premium.
 
-Pour réduire la facture : effort d'Opus (`output_config` dans `src/app/actions.ts`), modèle (`MOTION_MODEL` dans `src/lib/anthropic-client.ts`), résolution vidéo (`src/lib/video-models.ts`). Les estimations servant aux plafonds sont dans `src/lib/pricing.ts`.
+Pour réduire la facture : `MOTION_EFFORT` / `MOTION_MODEL` / `REFINE_*` (voir plus haut) et `VIDEO_DEFAULT_QUALITY`. Les retouches de scène passent par Sonnet 5.5 par défaut (la qualité de ce choix n'a pas été mesurée sur de vraies générations : à vérifier). Les estimations servant aux plafonds, et affichées dans l'interface, sont dans `src/lib/pricing.ts` et `src/lib/video-models.ts`.
 
 ## Limites connues et prochaines étapes
 
