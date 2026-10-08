@@ -7,7 +7,7 @@ import { auth } from "@/auth";
 import { allowedEmail } from "./allowlist";
 import { dailyCostCapUsd } from "./pricing";
 
-export type UsageKind = "motion" | "refine" | "voice" | "image" | "video";
+export type UsageKind = "motion" | "refine" | "voice" | "image" | "video" | "upload";
 
 export interface SessionUser {
   id: string;
@@ -18,8 +18,11 @@ export interface SessionUser {
 
 export type AccessError = "NON_CONNECTÉ" | "ACCÈS_REFUSÉ" | "QUOTA_ATTEINTE" | "SERVICE_INDISPONIBLE";
 
-/** Actions of each kind allowed per user over a rolling 24 hours. */
-export const DAILY_LIMITS: Record<UsageKind, number> = { motion: 6, refine: 40, voice: 60, image: 80, video: 8 };
+/**
+ * Actions of each kind allowed per user over a rolling 24 hours.
+ * "upload" counts signatures issued for a direct browser-to-Cloudinary upload (storage and bandwidth are not free).
+ */
+export const DAILY_LIMITS: Record<UsageKind, number> = { motion: 6, refine: 40, voice: 60, image: 80, video: 8, upload: 40 };
 
 export async function getSessionUser(): Promise<SessionUser | null> {
   try {

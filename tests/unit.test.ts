@@ -167,20 +167,20 @@ const t = async (name: string, fn: () => void | Promise<void>) => {
   });
 
   console.log("video models (inputs and prices checked against Replicate schemas and price pages)");
-  await t("seedance: tiers set the resolution; image -> image and no aspect_ratio; duration clamped 4-12", () => {
+  await t("seedance: tiers set the resolution; audio off; image -> image and no aspect_ratio; duration clamped 2-12", () => {
     const m = getVideoModel("seedance")!;
     const base = { prompt: "p", ratio: "9:16" as const };
-    assert.deepEqual(videoInput(m, { ...base, imageUrl: "https://res.cloudinary.com/x.png", duration: 2, quality: "eco" }), { prompt: "p", duration: 4, image: "https://res.cloudinary.com/x.png", resolution: "480p" });
-    assert.deepEqual(videoInput(m, { ...base, duration: 40, quality: "premium" }), { prompt: "p", duration: 12, aspect_ratio: "9:16", resolution: "1080p" });
+    assert.deepEqual(videoInput(m, { ...base, imageUrl: "https://res.cloudinary.com/x.png", duration: 1, quality: "eco" }), { prompt: "p", duration: 2, generate_audio: false, image: "https://res.cloudinary.com/x.png", resolution: "480p" });
+    assert.deepEqual(videoInput(m, { ...base, duration: 40, quality: "premium" }), { prompt: "p", duration: 12, generate_audio: false, aspect_ratio: "9:16", resolution: "1080p" });
     assert.equal(m.needsImage, false);
   });
-  await t("seedance prices per second of output: 0.018 / 0.036 / 0.072", () => {
+  await t("seedance prices per second of output, without audio: 0.013 / 0.026 / 0.06", () => {
     const m = getVideoModel("seedance")!;
     const c = (quality: "eco" | "standard" | "premium", duration: number) => videoCost(m, { prompt: "", ratio: "16:9", duration, quality });
-    assert.ok(Math.abs(c("eco", 5) - 0.09) < 1e-9);
-    assert.ok(Math.abs(c("standard", 5) - 0.18) < 1e-9);
-    assert.ok(Math.abs(c("premium", 10) - 0.72) < 1e-9);
-    assert.ok(Math.abs(c("eco", 1) - 0.072) < 1e-9, "a 1 s scene is billed as the 4 s minimum");
+    assert.ok(Math.abs(c("eco", 5) - 0.065) < 1e-9);
+    assert.ok(Math.abs(c("standard", 5) - 0.13) < 1e-9);
+    assert.ok(Math.abs(c("premium", 10) - 0.6) < 1e-9);
+    assert.ok(Math.abs(c("eco", 1) - 0.026) < 1e-9, "a 1 s scene is billed as the 2 s minimum");
   });
   await t("wan fast: image-to-video only; premium adds 30 fps interpolation; per-clip prices 0.05 / 0.11 / 0.145", () => {
     const m = getVideoModel("wan-fast")!;

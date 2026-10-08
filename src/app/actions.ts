@@ -3,6 +3,7 @@
 // Every exported function here is a public endpoint: anyone can call it directly, not just our UI.
 // So each one checks who is calling (src/lib/access.ts) before spending money or touching data.
 
+import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { signIn, signOut } from "@/auth";
 import cloudinary from "@/lib/cloudinary";
@@ -11,6 +12,7 @@ import { allowedEmail, authConfigured } from "@/lib/allowlist";
 import { authorize, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
 import { defaultVideoQuality, maxVideoSeconds, motionCost, refineCost, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { replicate } from "@/lib/replicate-client";
+import { buildPublicId, checkUploadRequest, isOwnCloudinaryUrl, isUploadKind, ownsPublicId, UPLOAD_KINDS, userSlug, type UploadKind } from "@/lib/upload";
 import { listVoiceProviders, synthesize, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
 import { getVideoModel, videoCost, videoInput, VIDEO_MODELS, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import { projectRequest, sceneRequest, STYLES, systemPrompt, type StyleId } from "@/lib/motion/prompt";
@@ -275,14 +277,8 @@ export async function synthesizeVoice(text: string, provider: VoiceProviderId, v
 // Video generation takes from tens of seconds to minutes, which is longer than a request should
 // stay open: start a Replicate prediction, then let the client poll checkVideoJob.
 
-function isCloudinaryUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "res.cloudinary.com";
-  } catch {
-    return false;
-  }
-}
+// Other people's clouds are served from the same host, so the cloud name has to be ours too.
+const isCloudinaryUrl = (value: string) => isOwnCloudinaryUrl(value, cloudinary.config().cloud_name);
 
 export interface VideoJobInput {
   modelId: string;
@@ -353,6 +349,112 @@ export async function checkVideoJob(id: string): Promise<VideoJobStatus> {
   } catch (error) {
     return { success: false, error: errorMessage(error, "ECHEC_VIDEO") };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Uploads: the user's own music, images and videos go from the browser straight to Cloudinary.
+// The file never passes through Next. The server decides every signed parameter, then checks the result.
+// ---------------------------------------------------------------------------
+
+export type UploadSignature =
+  | {
+      success: true;
+      url: string;
+      /** Public, unsigned: the browser sends it as the `api_key` field. */
+      apiKey: string;
+      /** The signed multipart fields, to append verbatim (an extra or altered one fails the signature), then `api_key`, then `file`. */
+      fields: Record<string, string>;
+    }
+  | { success: false; error: string };
+
+export async function requestUploadSignature(input: { kind: UploadKind; size: number }): Promise<UploadSignature> {
+  const who = await requireUser();
+  if (!who.ok) return { success: false, error: who.error };
+  const request = checkUploadRequest(input); // the client sends nothing else: it never chooses what gets signed
+  if (!request.ok) return { success: false, error: request.error };
+
+  const { cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret } = cloudinary.config();
+  if (!cloudName || !apiKey || !apiSecret) return { success: false, error: "CLOUDINARY_NON_CONFIGURÉ" };
+
+  const access = await authorize("upload", 0); // counted per user, but it never eats the dollar cap
+  if (!access.ok) return { success: false, error: access.error };
+  try {
+    const spec = UPLOAD_KINDS[request.kind];
+    const slug = userSlug(access.user.id);
+    // Never add file, cloud_name, resource_type or api_key here: they are not signed, and the SDK would hash them.
+    // Keep `&` out of every value (see buildPublicId).
+    const toSign: Record<string, string> = {
+      allowed_formats: spec.formats.join(","),
+      context: `uid=${slug}|kind=${request.kind}`,
+      overwrite: "false", // a replayed signature cannot replace a file that was already verified
+      public_id: buildPublicId(request.kind, access.user.id, randomUUID()), // unique: one signature creates at most one asset
+      tags: `neuro-studio,${request.kind},user-${slug}`,
+      timestamp: String(Math.round(Date.now() / 1000)), // seconds; a signature is valid for one hour
+      type: "upload",
+    };
+    if (process.env.CLOUDINARY_DYNAMIC_FOLDERS === "true") toSign.asset_folder = `neuro-studio/${request.kind}/${slug}`;
+
+    return {
+      success: true,
+      url: cloudinary.utils.api_url("upload", { resource_type: spec.resourceType }),
+      apiKey,
+      fields: { ...toSign, signature: cloudinary.utils.api_sign_request(toSign, apiSecret) },
+    };
+  } catch (error) {
+    console.error("requestUploadSignature failed:", errorMessage(error, "unknown"));
+    await refund(access.eventId);
+    return { success: false, error: "SERVICE_INDISPONIBLE" };
+  }
+}
+
+export type UploadConfirmation =
+  | { success: true; url: string; bytes: number; format: string; duration?: number; width?: number; height?: number }
+  | { success: false; error: string };
+
+const positive = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/** HTTP status of a Cloudinary SDK rejection. Log this, never the rejection itself: it carries the API credentials of the request. */
+function cloudinaryStatus(error: unknown): number | undefined {
+  const body = typeof error === "object" && error !== null && "error" in error ? error.error : error;
+  const code = typeof body === "object" && body !== null && "http_code" in body ? body.http_code : undefined;
+  return typeof code === "number" ? code : undefined;
+}
+
+export async function confirmUpload(input: { kind: UploadKind; publicId: string }): Promise<UploadConfirmation> {
+  const who = await requireUser();
+  if (!who.ok) return { success: false, error: who.error };
+  const kind = input?.kind;
+  if (!isUploadKind(kind)) return { success: false, error: "TYPE_INVALIDE" };
+  // Someone else's asset looks exactly like a missing one.
+  if (!ownsPublicId(input.publicId, kind, who.user.id)) return { success: false, error: "UPLOAD_INTROUVABLE" };
+
+  const spec = UPLOAD_KINDS[kind];
+  let asset: Record<string, unknown>;
+  try {
+    // The browser's own report of the upload is untrusted: read the asset back from Cloudinary. resource_type is the one
+    // thing the signature cannot pin, so looking it up under the expected type also rejects an upload sent to another endpoint.
+    const found: unknown = await cloudinary.api.resource(input.publicId, { resource_type: spec.resourceType, media_metadata: true });
+    asset = typeof found === "object" && found !== null ? (found as Record<string, unknown>) : {};
+  } catch (error) {
+    const status = cloudinaryStatus(error);
+    if (status === 404) return { success: false, error: "UPLOAD_INTROUVABLE" };
+    console.error("confirmUpload failed:", status ?? errorMessage(error, "unknown"));
+    return { success: false, error: "SERVICE_INDISPONIBLE" };
+  }
+
+  const bytes = positive(asset.bytes);
+  const format = typeof asset.format === "string" ? asset.format.toLowerCase() : "";
+  const url = typeof asset.secure_url === "string" ? asset.secure_url : "";
+  const accepted =
+    bytes !== undefined && bytes <= spec.maxBytes && spec.formats.includes(format) && asset.resource_type === spec.resourceType && url.startsWith("https://");
+  if (!accepted) {
+    // Cloudinary only enforces its own plan caps (and allowed_formats): everything stricter is enforced here, after the fact.
+    await cloudinary.uploader
+      .destroy(input.publicId, { resource_type: spec.resourceType, invalidate: true })
+      .catch((error: unknown) => console.error("confirmUpload cleanup failed:", cloudinaryStatus(error) ?? errorMessage(error, "unknown")));
+    return { success: false, error: "FICHIER_REFUSÉ" };
+  }
+  return { success: true, url, bytes, format, duration: positive(asset.duration), width: positive(asset.width), height: positive(asset.height) };
 }
 
 // ---------------------------------------------------------------------------

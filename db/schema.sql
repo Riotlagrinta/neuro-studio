@@ -25,7 +25,7 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES users(id) 
 CREATE INDEX IF NOT EXISTS projects_user_created_idx ON projects (user_id, created_at DESC);
 
 -- Journal des actions payantes : sert aux quotas et au plafond de coût, et de base à la facturation.
---   kind     : motion | refine | voice | image | video
+--   kind     : motion | refine | voice | image | video | upload (signature d'envoi direct vers Cloudinary, coût 0)
 --   cost_usd : coût ESTIMÉ au moment de l'action (voir src/lib/pricing.ts)
 --   refunded : l'action a échoué côté fournisseur, elle ne compte plus
 --   ref      : identifiant externe (ex. job Replicate), pour vérifier à qui il appartient

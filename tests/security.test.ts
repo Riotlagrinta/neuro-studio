@@ -170,12 +170,12 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.equal(failedStart.success, false, "failedStart=" + JSON.stringify(failedStart));
     assert.equal(await usage("WHERE NOT refunded"), 0);
 
-    setHandler(() => json({ id: "abcd1234efgh", status: "starting", urls: {}, model: "bytedance/seedance-1-lite", version: "x", input: {}, created_at: new Date().toISOString() }, 201));
+    setHandler(() => json({ id: "abcd1234efgh", status: "starting", urls: {}, model: "bytedance/seedance-1.5-pro", version: "x", input: {}, created_at: new Date().toISOString() }, 201));
     const ok = await actions.startVideoJob(VIDEO_INPUT);
     assert.equal(ok.success, true, "ok=" + JSON.stringify(ok) + " calls=" + JSON.stringify(calls));
     const rows = await db.query<{ ref: string; cost_usd: string }>(`SELECT ref, cost_usd FROM usage_events WHERE NOT refunded`);
     assert.equal(rows.rows[0].ref, "abcd1234efgh");
-    assert.ok(Math.abs(Number(rows.rows[0].cost_usd) - 0.09) < 1e-6, "5 s of Seedance, economical tier (480p) = 0.09 $");
+    assert.ok(Math.abs(Number(rows.rows[0].cost_usd) - 0.065) < 1e-6, "5 s of Seedance 1.5 Pro, economical tier (480p, no audio) = 0.065 $");
   });
   await t("checkVideoJob: someone else's job id is refused and never forwarded to Replicate", async () => {
     setUser(B);
@@ -208,20 +208,21 @@ async function scenario(variant: "legacy" | "fresh") {
   const lastPrediction = () => requests.filter((r) => r.url.includes("/predictions")).at(-1)!;
   const lastCost = async () => Number((await db.query<{ c: string }>(`SELECT cost_usd::float AS c FROM usage_events WHERE NOT refunded ORDER BY id DESC LIMIT 1`)).rows[0].c);
 
-  await t("default is the economical tier: 480p sent to Replicate, 0.09 $ recorded", async () => {
+  await t("default is the economical tier: 480p sent to Replicate, 0.065 $ recorded", async () => {
     await reset(); requests.length = 0; predictionStub();
     assert.equal((await actions.startVideoJob(VIDEO_INPUT)).success, true);
     assert.equal(lastPrediction().body.input.resolution, "480p");
-    assert.ok(Math.abs((await lastCost()) - 0.09) < 1e-6);
+    assert.equal(lastPrediction().body.input.generate_audio, false, "sound defaults to ON at twice the price: it must be switched off");
+    assert.ok(Math.abs((await lastCost()) - 0.065) < 1e-6);
   });
-  await t("standard = 720p at 0.036 $/s; premium = 1080p at 0.072 $/s", async () => {
+  await t("standard = 720p at 0.026 $/s; premium = 1080p at 0.06 $/s", async () => {
     await reset(); requests.length = 0; predictionStub();
     await actions.startVideoJob({ ...VIDEO_INPUT, quality: "standard" });
     assert.equal(lastPrediction().body.input.resolution, "720p");
-    assert.ok(Math.abs((await lastCost()) - 0.18) < 1e-6);
+    assert.ok(Math.abs((await lastCost()) - 0.13) < 1e-6);
     await actions.startVideoJob({ ...VIDEO_INPUT, quality: "premium" });
     assert.equal(lastPrediction().body.input.resolution, "1080p");
-    assert.ok(Math.abs((await lastCost()) - 0.36) < 1e-6);
+    assert.ok(Math.abs((await lastCost()) - 0.3) < 1e-6);
   });
   await t("Wan premium = 720p + 30 fps interpolation at 0.145 $; economical = 0.05 $", async () => {
     await reset(); requests.length = 0; predictionStub();
@@ -246,9 +247,9 @@ async function scenario(variant: "legacy" | "fresh") {
   await t("a premium clip counts more against the daily cost cap", async () => {
     await reset(); predictionStub();
     process.env.DAILY_COST_CAP_USD = "0.5";
-    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "premium" })).success, true); // 0.36
-    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "premium" })).success === false && "QUOTA_ATTEINTE", "QUOTA_ATTEINTE"); // 0.72 > 0.5
-    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "eco" })).success, true); // 0.36 + 0.09 = 0.45 <= 0.5
+    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "premium" })).success, true); // 0.30
+    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "premium" })).success === false && "QUOTA_ATTEINTE", "QUOTA_ATTEINTE"); // 0.60 > 0.5
+    assert.equal((await actions.startVideoJob({ ...VIDEO_INPUT, quality: "eco" })).success, true); // 0.30 + 0.065 = 0.365 <= 0.5
     delete process.env.DAILY_COST_CAP_USD;
   });
 
