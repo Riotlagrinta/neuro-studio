@@ -88,7 +88,8 @@ export async function exportProjectToWebm(
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
     source.connect(destination);
-    source.start(t0 + sceneStart(project, i));
+    // start(when, offset, duration): a split scene plays its slice of the file, not the whole file.
+    source.start(t0 + sceneStart(project, i), project.scenes[i].audioOffset ?? 0, project.scenes[i].duration);
   });
 
   recorder.start(250);

@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { Check, Clapperboard, Image as ImageIcon, Loader2, Mic2, Sparkles } from "lucide-react";
 import clsx from "clsx";
-import type { MotionScene } from "@/lib/motion/types";
+import { TRANSITIONS, type MotionScene, type TransitionType } from "@/lib/motion/types";
 
 export type BusyKind = "voice" | "image" | "video" | "refine";
+
+const TRANSITION_LABELS: Record<TransitionType, string> = { none: "Coupe franche", fade: "Fondu", slide: "Glissement", zoom: "Zoom", wipe: "Balayage" };
 
 // The inspector for the scene under the playhead (the timeline picks which one that is).
 interface Props {
@@ -24,6 +26,7 @@ interface Props {
   /** Estimated price of each action for this scene, already formatted ("0,09 $"). */
   estimates: { voice: string; image: string; video: string };
   onChange: (patch: Partial<MotionScene>) => void;
+  onTransition: (patch: { type?: TransitionType; duration?: number }) => void;
   onVoice: () => void;
   onImage: () => void;
   onVideo: () => void;
@@ -80,6 +83,7 @@ export default function SceneCard({
   motionReady,
   estimates,
   onChange,
+  onTransition,
   onVoice,
   onImage,
   onVideo,
@@ -163,6 +167,39 @@ export default function SceneCard({
             onChange={(e) => onChange({ visualPrompt: e.target.value })}
             className="min-h-[72px] w-full resize-none rounded-lg border border-line-2 bg-ink p-3 text-sm italic leading-relaxed text-zinc-400 outline-none transition-colors focus:border-accent"
           />
+        </div>
+
+        <div className="grid grid-cols-[1fr_88px] gap-3">
+          <label className="space-y-1.5">
+            <span className="label">{index === 0 ? "Transition (ignorée : 1re scène)" : "Transition d'entrée"}</span>
+            <select
+              aria-label="Transition d'entrée"
+              value={scene.transition.type}
+              disabled={index === 0}
+              onChange={(e) => onTransition({ type: e.target.value as TransitionType })}
+              className="w-full rounded-md border border-line-2 bg-ink px-2 py-1.5 text-sm text-cream outline-none focus:border-accent disabled:opacity-40"
+            >
+              {TRANSITIONS.map((tr) => (
+                <option key={tr} value={tr}>
+                  {TRANSITION_LABELS[tr]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="label">Durée (s)</span>
+            <input
+              type="number"
+              aria-label="Durée de la transition"
+              min={0.2}
+              max={1.5}
+              step={0.1}
+              value={scene.transition.duration}
+              disabled={index === 0 || scene.transition.type === "none"}
+              onChange={(e) => onTransition({ duration: Math.min(1.5, Math.max(0.2, Number(e.target.value) || scene.transition.duration)) })}
+              className="w-full rounded-md border border-line-2 bg-ink px-2 py-1.5 text-sm text-cream outline-none focus:border-accent disabled:opacity-40"
+            />
+          </label>
         </div>
 
         <div className="space-y-1.5">

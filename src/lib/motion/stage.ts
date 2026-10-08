@@ -93,14 +93,17 @@ export class MediaStage {
 
     if (activeVideo) {
       const d = activeVideo.duration;
-      const target = Number.isFinite(d) && d > 0 ? localTime % d : 0;
+      // A scene cut out of a longer one starts part-way into its clip (mediaOffset), and the clip loops.
+      const target = Number.isFinite(d) && d > 0 ? (localTime + (scene.mediaOffset ?? 0)) % d : 0;
       if (Math.abs(activeVideo.currentTime - target) > 0.3) activeVideo.currentTime = target;
       if (playing) void activeVideo.play().catch(() => {});
       else activeVideo.pause();
     }
     if (activeAudio) {
-      if (Math.abs(activeAudio.currentTime - localTime) > 0.3) activeAudio.currentTime = localTime;
-      if (playing && localTime < (activeAudio.duration || Infinity)) void activeAudio.play().catch(() => {});
+      // Likewise the narration: the second half of a split scene resumes where the first half stopped.
+      const target = localTime + (scene.audioOffset ?? 0);
+      if (Math.abs(activeAudio.currentTime - target) > 0.3) activeAudio.currentTime = target;
+      if (playing && target < (activeAudio.duration || Infinity) && localTime < scene.duration) void activeAudio.play().catch(() => {});
       else activeAudio.pause();
     }
   }

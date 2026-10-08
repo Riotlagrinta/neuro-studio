@@ -681,6 +681,7 @@ export default function Home() {
                 motionReady={motionReady}
                 estimates={{ voice: formatUsd(voiceEstimate(scene)), image: formatUsd(0), video: formatUsd(videoEstimate(scene)) }}
                 onChange={(patch) => patchScene(sceneIndex, (s) => ({ ...s, ...patch }), `scene-${sceneIndex}-${Object.keys(patch).join(",")}`)}
+                onTransition={(patch) => patchScene(sceneIndex, (s) => ({ ...s, transition: { ...s.transition, ...patch } }), `transition-${scene.uid}`)}
                 onVoice={() => makeVoice(scene.uid)}
                 onImage={() => makeImage(scene.uid)}
                 onVideo={() => makeVideo(scene.uid)}
