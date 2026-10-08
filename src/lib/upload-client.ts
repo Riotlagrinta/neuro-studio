@@ -7,7 +7,7 @@
 
 import { confirmUpload, requestUploadSignature } from "@/app/actions";
 import { explain } from "@/lib/errors";
-import { checkUploadRequest, fileFormat, planImageResize, UPLOAD_KINDS, type ImageResizePlan, type UploadKind } from "@/lib/upload";
+import { CONFIRM_ATTEMPTS, checkUploadRequest, fileFormat, planImageResize, UPLOAD_KINDS, type ImageResizePlan, type UploadKind } from "@/lib/upload";
 
 export interface UploadProgress {
   /** "preparing": checking the file, shrinking a photo. "uploading": `ratio` runs from 0 to 1. "processing": sent, Cloudinary and our check are still working. */
@@ -66,6 +66,9 @@ const SERVER_MESSAGES: Record<string, string> = {
 };
 const serverMessage = (code: string) => SERVER_MESSAGES[code] ?? explain(code);
 
+// The signature has already counted by the time the file is checked, so the generic "cette tentative n'a pas été comptée" would be false.
+const NOT_VERIFIED = "Le fichier est envoyé, mais sa vérification a échoué : réessayez dans un instant.";
+
 function rejectionMessage({ status, detail }: CloudinaryRejection): string {
   const reason = detail ? ` (${detail.slice(0, 120)})` : "";
   if (status === 413) return "Fichier trop volumineux pour l'hébergeur.";
@@ -78,6 +81,19 @@ const abortError = () => new DOMException("Envoi annulé", "AbortError");
 const checkAborted = (signal?: AbortSignal) => {
   if (signal?.aborted) throw abortError();
 };
+
+/** Resolves after `ms`, or as soon as `signal` aborts (the caller then checks it). */
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 
 const megabytes = (bytes: number) => `${(bytes / 1_000_000).toFixed(1).replace(/\.0$/, "").replace(".", ",")} Mo`;
 
@@ -191,6 +207,20 @@ function readDuration(file: Blob, kind: "audio" | "video"): Promise<number | und
   });
 }
 
+/** How long a finished upload waits for the browser's own reading of the duration. */
+const DURATION_GRACE_MS = 1500;
+
+/** Waits at most `ms` for a promise that never rejects. Some browsers (iOS Safari) never load a detached media element. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    void promise.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The upload itself
 // ---------------------------------------------------------------------------
@@ -218,7 +248,8 @@ function postToCloudinary(
     };
     xhr.open("POST", signed.url);
     xhr.responseType = "json"; // null if the answer is not JSON
-    // No Content-Type (the browser adds the multipart boundary) and no credentials: a plain "simple" CORS request.
+    // No Content-Type (the browser adds the multipart boundary) and no credentials. The progress listener below makes the
+    // browser send a CORS preflight first, which Cloudinary's upload endpoints answer (checked with curl on 2026-10-08).
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress?.({ phase: "uploading", ratio: event.loaded / event.total });
     };
@@ -254,6 +285,21 @@ async function sendSigned(body: Blob, kind: UploadKind, options: UploadOptions):
 }
 
 /**
+ * Asks the server to check the upload. A transient failure of the check is retried, because giving up would leave the
+ * file on Cloudinary with nothing pointing at it, and the user would have to pick it again (and spend another signature).
+ */
+async function confirmSent(kind: UploadKind, publicId: string, signal?: AbortSignal) {
+  for (let attempt = 1; ; attempt++) {
+    checkAborted(signal);
+    const confirmed = await confirmUpload({ kind, publicId });
+    if (confirmed.success) return confirmed;
+    if (confirmed.error !== "SERVICE_INDISPONIBLE") throw new UploadError(serverMessage(confirmed.error));
+    if (attempt >= CONFIRM_ATTEMPTS) throw new UploadError(NOT_VERIFIED);
+    await pause(1000 * attempt, signal);
+  }
+}
+
+/**
  * Uploads a file of the user's own to Cloudinary. A photo too big for the hosting limits is shrunk first.
  * Rejects with an UploadError (French message), or an AbortError DOMException when `signal` is aborted.
  */
@@ -271,14 +317,12 @@ export async function uploadFile(file: File, kind: UploadKind, options: UploadOp
   const duration = kind === "image" ? undefined : readDuration(body, kind);
 
   const publicId = await sendSigned(body, kind, options);
-  checkAborted(options.signal);
-  const confirmed = await confirmUpload({ kind, publicId });
-  if (!confirmed.success) throw new UploadError(serverMessage(confirmed.error));
+  const confirmed = await confirmSent(kind, publicId, options.signal);
   return {
     url: confirmed.url,
     bytes: confirmed.bytes,
     format: confirmed.format,
-    duration: confirmed.duration ?? (await duration),
+    duration: confirmed.duration ?? (duration ? await within(duration, DURATION_GRACE_MS) : undefined), // display only: never worth a long wait
     width: confirmed.width,
     height: confirmed.height,
   };

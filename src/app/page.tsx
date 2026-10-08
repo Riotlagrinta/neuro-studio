@@ -19,20 +19,30 @@ import {
 } from "./actions";
 import AccountMenu from "@/components/AccountMenu";
 import BriefForm, { type Gate } from "@/components/BriefForm";
-import LayerInspector from "@/components/LayerInspector";
+import EditToolbar from "@/components/EditToolbar";
+import LayerInspector, { type TransformProp } from "@/components/LayerInspector";
 import GeneratingTimeline from "@/components/GeneratingTimeline";
 import { HeroReel, KineticTitle, SweepRuler } from "@/components/Hero";
 import MotionPlayer, { type MotionPlayerHandle } from "@/components/MotionPlayer";
-import SceneCard, { type BusyKind } from "@/components/SceneCard";
+import MusicPanel from "@/components/MusicPanel";
+import SceneCard, { type BusyKind, type ImportKind } from "@/components/SceneCard";
 import Timeline, { type TimelineHandle } from "@/components/Timeline";
 import { explain } from "@/lib/errors";
 import { EXPORT_QUALITIES, exportProjectToWebm, type ExportQuality } from "@/lib/motion/export";
+import { ExportUnavailableError, exportProject } from "@/lib/motion/export-mp4";
+import { EXPORT_PRESETS, exportFilename } from "@/lib/motion/export-plan";
 import { buildSampleProject } from "@/lib/motion/sample";
-import { deleteLayer, trimLayer, updateLayer } from "@/lib/motion/edit";
-import { ensureMediaLayer } from "@/lib/motion/sanitize";
-import { projectDuration, type AspectRatio, type MotionProject, type MotionScene } from "@/lib/motion/types";
+import { generateCaptionLayer } from "@/lib/motion/captions";
+import { deleteLayer, snapToFrame, trimLayer, updateLayer } from "@/lib/motion/edit";
+import { addLayer, createLayer, duplicateLayer, MAX_LAYERS, reorderLayer, type LayerReorder, type NewLayerKind } from "@/lib/motion/layers";
+import { setTrackAt } from "@/lib/motion/manipulate";
+import { ensureMediaLayer, MAX_SCENES } from "@/lib/motion/sanitize";
+import { addScene, deleteScene, duplicateScene, splitScene } from "@/lib/motion/scenes";
+import type { Selection } from "@/lib/motion/selection";
+import { locate, projectDuration, sceneStart, type AspectRatio, type Music, type MotionProject, type MotionScene } from "@/lib/motion/types";
 import { formatUsd, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { exportScriptPdf } from "@/lib/script-pdf";
+import { uploadFile, UploadError } from "@/lib/upload-client";
 import { useHistory } from "@/lib/useHistory";
 import { getVideoModel, QUALITY_LABELS, videoCost, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import type { VoiceProviderId } from "@/lib/voice-providers";
@@ -98,7 +108,12 @@ export default function Home() {
   const hist = useHistory<MotionProject | null>(null);
   const project = hist.present;
   const { reset: resetProject } = hist; // stable across renders, so effects that load a project run once
-  const [selected, setSelected] = useState<{ scene: string; layer: string } | null>(null); // scene = its uid
+  const [selected, setSelected] = useState<Selection | null>(null);
+  const [musicSelected, setMusicSelected] = useState(false);
+  // Bumped whenever a different project replaces the current one: keeps per-project widget state (uploads…) from leaking across.
+  const [epoch, setEpoch] = useState(0);
+  const [toast, setToast] = useState("");
+  const [importing, setImporting] = useState<Record<string, ImportKind | null | undefined>>({});
   const [topic, setTopic] = useState("");
   const [caps, setCaps] = useState<StudioCapabilities | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -119,10 +134,21 @@ export default function Home() {
   const saved = !!project && project === savedProject;
   const [pdfBusy, setPdfBusy] = useState(false);
   const [exportPct, setExportPct] = useState<number | null>(null);
+  // "fast": frames encoded one by one, faster than playback (MP4 or WebM). "realtime": the tab is recorded while it plays.
+  const [exportMode, setExportMode] = useState<"fast" | "realtime">("fast");
+  const exportAbort = useRef<AbortController | null>(null);
+
+  // The playhead is not React state (the player drives the timeline through refs). The inspector needs it as a value,
+  // so it gets a throttled copy: at most ~8 renders a second while playing, one right after a seek.
+  const [playhead, setPlayhead] = useState(0);
 
   const playerRef = useRef<MotionPlayerHandle>(null);
   const timelineRef = useRef<TimelineHandle>(null);
   const alive = useRef(true);
+  const timeRef = useRef(0);
+  const flushTimer = useRef<number | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const pendingSeek = useRef<number | null>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -151,6 +177,7 @@ export default function Home() {
         if (!alive.current) return;
         if (r.success) {
           resetProject(r.data);
+          setEpoch((e) => e + 1);
           setTopic(r.topic);
         } else {
           setError(explain(r.error));
@@ -159,8 +186,17 @@ export default function Home() {
     }
     return () => {
       alive.current = false;
+      if (flushTimer.current !== null) window.clearTimeout(flushTimer.current);
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     };
   }, [resetProject]);
+
+  // A scene added, duplicated or deleted by a button: once the new project has rendered (the player has taken it), move the playhead to it.
+  useEffect(() => {
+    if (pendingSeek.current === null) return;
+    playerRef.current?.seekToScene(pendingSeek.current);
+    pendingSeek.current = null;
+  }, [project]);
 
   // Opening a project replaces the whole page: start at the top, not where the landing page was scrolled.
   const hasProject = !!project;
@@ -202,6 +238,8 @@ export default function Home() {
       const result = await generateMotionProject(input);
       if (result.success) {
         hist.reset(result.data);
+        setEpoch((e) => e + 1);
+        setMusicSelected(false);
         setSavedProject(null);
         setSelected(null);
         setTopic(input.topic);
@@ -220,6 +258,8 @@ export default function Home() {
     setError("");
     setTopic("Démo");
     hist.reset(buildSampleProject(ratio));
+    setEpoch((e) => e + 1);
+    setMusicSelected(false);
     setSavedProject(null);
     setSelected(null);
     setActiveScene(0);
@@ -227,7 +267,10 @@ export default function Home() {
 
   const closeProject = () => {
     hist.reset(null);
+    setEpoch((e) => e + 1);
+    setMusicSelected(false);
     setSelected(null);
+    setImporting({});
     setBusy({});
     setNotes({});
     setSavedProject(null);
@@ -270,13 +313,27 @@ export default function Home() {
     if (!project) return;
     setError("");
     setExportPct(0);
+    setExportMode("fast");
+    const controller = new AbortController();
+    exportAbort.current = controller;
+    const onProgress = (fraction: number) => setExportPct(Math.round(fraction * 100));
     try {
-      const blob = await exportProjectToWebm(project, (fraction) => setExportPct(Math.round(fraction * 100)), { quality: exportQuality });
-      const name = project.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "neuro-studio";
-      download(blob, `${name}.webm`);
+      try {
+        const result = await exportProject(project, onProgress, { preset: EXPORT_PRESETS[exportQuality], signal: controller.signal });
+        download(result.blob, exportFilename(project.title, result.container, exportQuality));
+        if (result.warnings.length > 0) say(result.warnings.join(" "));
+      } catch (e) {
+        if (!(e instanceof ExportUnavailableError)) throw e;
+        // This browser cannot encode frame by frame (or the file would not fit in memory): record the tab as it plays.
+        setExportMode("realtime");
+        setExportPct(0);
+        const blob = await exportProjectToWebm(project, onProgress, { quality: exportQuality, signal: controller.signal });
+        download(blob, exportFilename(project.title, "realtime", exportQuality));
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Échec de l'export vidéo.");
+      if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Échec de l'export vidéo.");
     } finally {
+      exportAbort.current = null;
       setExportPct(null);
     }
   };
@@ -383,6 +440,106 @@ export default function Home() {
   const sceneIndex = project ? Math.min(activeScene, project.scenes.length - 1) : 0;
 
   const selectedLayer = scene && selected && selected.scene === scene.uid ? (scene.layers.find((l) => l.id === selected.layer) ?? null) : null;
+  const say = (text: string) => {
+    setToast(text);
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 4500);
+  };
+  /** Selects a layer (or nothing). The music and a layer are never selected together. */
+  const pick = (next: Selection | null) => {
+    setSelected(next);
+    if (next) setMusicSelected(false);
+  };
+  const pickMusic = () => {
+    setMusicSelected(true);
+    setSelected(null);
+  };
+
+  /** Every painted frame: the timeline follows by ref, the inspector gets a throttled copy as state. */
+  const onFrame = (t: number) => {
+    timelineRef.current?.setTime(t);
+    timeRef.current = t;
+    if (flushTimer.current === null) {
+      flushTimer.current = window.setTimeout(() => {
+        flushTimer.current = null;
+        setPlayhead(timeRef.current);
+      }, 120);
+    }
+  };
+  /** Seconds into the active scene, from the player itself (exact, unlike the throttled state). */
+  const localNow = () => Math.max(0, (playerRef.current?.getTime() ?? 0) - (project ? sceneStart(project, sceneIndex) : 0));
+
+  // ---- editing: scenes ----
+
+  const sceneCap = !!project && project.scenes.length >= MAX_SCENES;
+  const capMessage = `Maximum de ${MAX_SCENES} scènes.`;
+  /** Applies a scene operation. A refused one comes back as the same project: nothing changes and no undo step is made. */
+  const applyScenes = (next: MotionProject, focus: number, seek: boolean) => {
+    if (!project || next === project) return false;
+    hist.set(() => next);
+    setActiveScene(focus);
+    if (seek) pendingSeek.current = focus;
+    return true;
+  };
+  const selectScene = (index: number) => {
+    setActiveScene(index);
+    playerRef.current?.seekToScene(index);
+  };
+  const cutHere = () => {
+    if (!project) return;
+    if (sceneCap) return say(capMessage);
+    const { index, local } = locate(project, playerRef.current?.getTime() ?? 0);
+    // The playhead stays where it is, which is now the start of the second half.
+    if (!applyScenes(splitScene(project, index, local), index + 1, false)) say("Coupe impossible ici : chaque morceau doit durer au moins 0,3 s.");
+  };
+  const copyScene = () => {
+    if (!project) return;
+    if (sceneCap) return say(capMessage);
+    applyScenes(duplicateScene(project, sceneIndex), sceneIndex + 1, true);
+  };
+  const newScene = () => {
+    if (!project) return;
+    if (sceneCap) return say(capMessage);
+    applyScenes(addScene(project, sceneIndex), sceneIndex + 1, true);
+  };
+  const dropScene = () => {
+    if (!project) return;
+    const next = deleteScene(project, sceneIndex);
+    if (applyScenes(next, Math.min(sceneIndex, next.scenes.length - 1), true)) setSelected(null);
+  };
+  const canSplit = (() => {
+    if (!project || sceneCap) return false;
+    const here = locate(project, playhead);
+    return here.local >= 0.3 && project.scenes[here.index].duration - here.local >= 0.3;
+  })();
+
+  // ---- editing: layers ----
+
+  const insertLayer = (build: (s: MotionScene, ratio: AspectRatio, t: number) => ReturnType<typeof createLayer> | null, missing?: string) => {
+    if (!project || !scene) return;
+    const layer = build(scene, project.ratio, localNow());
+    if (!layer) return say(missing ?? "Impossible d'ajouter ce calque.");
+    const next = addLayer(scene, layer);
+    if (next === scene) return say(`Maximum de ${MAX_LAYERS} calques par scène.`);
+    patchScene(sceneIndex, () => next);
+    pick({ scene: scene.uid, layer: next.layers[next.layers.length - 1].id }); // addLayer renames the layer on a collision: read the id back
+  };
+  const newLayer = (kind: NewLayerKind) => insertLayer((s, ratio, t) => createLayer(kind, s, ratio, t));
+  const addCaptions = () => insertLayer((s, ratio) => generateCaptionLayer(s, ratio), "Cette scène n'a pas de narration à sous-titrer.");
+  const captionEverything = () => {
+    if (!project) return;
+    let added = 0;
+    const scenes = project.scenes.map((s) => {
+      if (s.layers.some((l) => l.type === "captions")) return s;
+      const layer = generateCaptionLayer(s, project.ratio);
+      const next = layer ? addLayer(s, layer) : s;
+      if (next !== s) added++;
+      return next;
+    });
+    if (added === 0) return say("Aucune scène à sous-titrer : il faut une narration, et les scènes déjà sous-titrées sont ignorées.");
+    hist.set(() => ({ ...project, scenes }));
+    say(`Sous-titres ajoutés à ${added} scène${added > 1 ? "s" : ""}.`);
+  };
   const editLayer = (patch: Record<string, unknown>, key: string) =>
     selectedLayer && patchScene(sceneIndex, (s) => updateLayer(s, selectedLayer.id, patch), `layer-${selectedLayer.id}-${key}`);
   const trimSelected = (edge: "start" | "end", t: number) =>
@@ -392,9 +549,65 @@ export default function Home() {
     patchScene(sceneIndex, (s) => deleteLayer(s, selectedLayer.id));
     setSelected(null);
   };
+  const copyLayer = () => {
+    if (!selectedLayer || !project || !scene) return;
+    const next = duplicateLayer(scene, selectedLayer.id, project.ratio);
+    if (next === scene) return say(`Maximum de ${MAX_LAYERS} calques par scène.`);
+    patchScene(sceneIndex, () => next);
+    pick({ scene: scene.uid, layer: next.layers[scene.layers.findIndex((l) => l.id === selectedLayer.id) + 1].id });
+  };
+  const restack = (to: LayerReorder) => {
+    if (selectedLayer && project) patchScene(sceneIndex, (s) => reorderLayer(s, selectedLayer.id, to, project.ratio));
+  };
+  /** A number typed in the inspector: written at the playhead, so on an animated track it moves that keyframe. */
+  const transform = (prop: TransformProp, value: number) => {
+    if (!selectedLayer || !scene) return;
+    const t = snapToFrame(Math.min(scene.duration, localNow()));
+    patchScene(
+      sceneIndex,
+      (s) => {
+        const layer = s.layers.find((l) => l.id === selectedLayer.id);
+        return layer ? updateLayer(s, layer.id, { [prop]: setTrackAt(layer[prop], t, value, undefined, prop === "scale" || prop === "opacity" ? 3 : 2) }) : s;
+      },
+      `transform-${selectedLayer.id}-${prop}`,
+    );
+  };
 
-  // Keyboard: Ctrl/Cmd+Z undo, +Shift (or Y) redo, Space play, ←/→ one frame (Shift: one second), Delete the layer, Esc deselect.
-  // Ignored while typing in a field. The handler is swapped every render so it always sees the current state.
+  // ---- editing: music and imported media ----
+
+  const setMusic = (music: Music | null, key?: string) =>
+    hist.set((p) => {
+      if (!p) return p;
+      if (music) return { ...p, music };
+      if (!p.music) return p;
+      const rest = { ...p };
+      delete rest.music;
+      return rest;
+    }, key);
+
+  const importMedia = async (uid: string, kind: ImportKind, file: File) => {
+    if (!project) return;
+    const { ratio } = project;
+    setImporting((m) => ({ ...m, [uid]: kind }));
+    setNotes((n) => ({ ...n, [uid]: undefined }));
+    try {
+      const uploaded = await uploadFile(file, kind);
+      patchAssets(uid, (s) => {
+        if (kind === "image") return ensureMediaLayer({ ...s, imageUrl: uploaded.url }, ratio);
+        const next = { ...s, videoUrl: uploaded.url };
+        delete next.mediaOffset; // a new clip starts from its beginning
+        return ensureMediaLayer(next, ratio);
+      });
+    } catch (e) {
+      if (alive.current) setNotes((n) => ({ ...n, [uid]: { text: e instanceof UploadError ? e.message : "L'envoi a échoué. Réessayez.", error: true } }));
+    } finally {
+      if (alive.current) setImporting((m) => ({ ...m, [uid]: null }));
+    }
+  };
+
+  // Keyboard: Ctrl/Cmd+Z undo, +Shift (or Y) redo, Ctrl/Cmd+D duplicate, Space play, ←/→ one frame (Shift: one second),
+  // T text, S cut at the playhead, Delete the layer, Esc deselect. Ignored while typing in a field.
+  // The handler is swapped every render so it always sees the current state.
   const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     onKeyRef.current = (e) => {
@@ -410,6 +623,12 @@ export default function Home() {
         else hist.undo();
         return;
       }
+      if (mod && key === "d" && !typing) {
+        e.preventDefault(); // the browser would bookmark the page
+        if (selectedLayer) copyLayer();
+        else copyScene();
+        return;
+      }
       if (typing || mod || e.altKey) return;
       const player = playerRef.current;
       if (e.code === "Space" && tag !== "BUTTON") {
@@ -421,8 +640,15 @@ export default function Home() {
       } else if ((e.key === "Delete" || e.key === "Backspace") && selectedLayer) {
         e.preventDefault();
         removeSelected();
+      } else if (key === "t" && tag !== "BUTTON") {
+        e.preventDefault();
+        newLayer("text");
+      } else if (key === "s" && tag !== "BUTTON") {
+        e.preventDefault();
+        cutHere();
       } else if (e.key === "Escape") {
         setSelected(null);
+        setMusicSelected(false);
       }
     };
   });
@@ -552,6 +778,11 @@ export default function Home() {
                   </option>
                 ))}
               </select>
+              {exportPct !== null && (
+                <button onClick={() => exportAbort.current?.abort()} aria-label="Annuler l'export" className={toolButton}>
+                  Annuler
+                </button>
+              )}
               <button
                 onClick={handleExportVideo}
                 disabled={exportPct !== null}
@@ -565,7 +796,11 @@ export default function Home() {
           {exportPct !== null && (
             <div className="relative h-1 bg-line">
               <div className="h-full bg-pink transition-[width]" style={{ width: `${exportPct}%` }} />
-              <p className="absolute left-4 top-2 z-10 text-xs text-zinc-400">L&apos;export enregistre la vidéo en temps réel : gardez cet onglet visible jusqu&apos;à la fin.</p>
+              <p className="absolute left-4 top-2 z-10 text-xs text-zinc-400">
+                {exportMode === "realtime"
+                  ? "Ce navigateur enregistre la vidéo en temps réel : gardez cet onglet visible jusqu'à la fin."
+                  : "Export image par image, plus rapide que la lecture."}
+              </p>
             </div>
           )}
 
@@ -575,7 +810,12 @@ export default function Home() {
                 ref={playerRef}
                 project={project}
                 onSceneChange={setActiveScene}
-                onFrame={(t) => timelineRef.current?.setTime(t)}
+                onFrame={onFrame}
+                selection={selected}
+                onSelect={pick}
+                onEditStart={hist.begin}
+                onEdit={hist.update}
+                onEditEnd={hist.end}
               />
             </div>
 
@@ -614,6 +854,7 @@ export default function Home() {
                     </option>
                   ))}
                 </select>
+                {videoModel && <p className="font-mono text-[9px] text-zinc-600">{videoModel.note}</p>}
                 <div className="space-y-1.5">
                   <p className="label">Qualité vidéo IA</p>
                   <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Qualité vidéo IA">
@@ -642,6 +883,9 @@ export default function Home() {
                   <button onClick={() => generateAll("image")} disabled={!canUse || bulk !== null} className={toolButton}>
                     {bulk === "image" && <Loader2 className="h-3 w-3 animate-spin" />} Tous les fonds
                   </button>
+                  <button onClick={captionEverything} aria-label="Sous-titrer toutes les scènes" className={toolButton}>
+                    Sous-titrer tout
+                  </button>
                 </div>
                 {remaining && (
                   <p className="font-mono text-[10px] text-zinc-500">
@@ -655,15 +899,29 @@ export default function Home() {
                 {canUse && !caps?.videoAvailable && <p className="font-mono text-[10px] text-zinc-600">REPLICATE_API_TOKEN manquant : plans vidéo IA désactivés.</p>}
               </section>
 
+              <MusicPanel
+                key={epoch}
+                music={project.music ?? null}
+                totalSeconds={projectDuration(project)}
+                canUpload={canUse}
+                onSet={setMusic}
+                selected={musicSelected}
+              />
+
               {selectedLayer && (
                 <LayerInspector
                   key={`${scene.uid}-${selectedLayer.id}`}
                   layer={selectedLayer}
                   sceneDuration={scene.duration}
-                  canDelete={scene.layers.length > 1}
+                  time={Math.min(scene.duration, Math.max(0, playhead - sceneStart(project, sceneIndex)))}
                   onChange={editLayer}
                   onTrim={trimSelected}
                   onDelete={removeSelected}
+                  onTransform={transform}
+                  onDuplicate={copyLayer}
+                  canDuplicate={scene.layers.length < MAX_LAYERS}
+                  onReorder={restack}
+                  canReorder={(to) => reorderLayer(scene, selectedLayer.id, to, project.ratio) !== scene}
                 />
               )}
 
@@ -686,23 +944,54 @@ export default function Home() {
                 onImage={() => makeImage(scene.uid)}
                 onVideo={() => makeVideo(scene.uid)}
                 onRefine={(instruction) => refine(scene.uid, instruction)}
+                onImportMedia={(kind, file) => importMedia(scene.uid, kind, file)}
+                importBusy={importing[scene.uid] ?? null}
+                importDisabledReason={canUse ? undefined : "Connexion requise pour importer vos médias."}
               />
             </aside>
           </div>
 
-          <div className="px-4 pb-4">
+          <div className="space-y-3 px-4 pb-4">
+            <EditToolbar
+              onAddText={() => newLayer("text")}
+              onAddShape={newLayer}
+              onAddCaptions={addCaptions}
+              captionsDisabledReason={scene.voiceOver.trim() ? undefined : "Cette scène n'a pas de narration à sous-titrer"}
+              onSplit={cutHere}
+              canSplit={canSplit}
+              onDuplicateScene={copyScene}
+              onDeleteScene={dropScene}
+              canDeleteScene={project.scenes.length > 1}
+              onAddScene={newScene}
+              sceneCount={project.scenes.length}
+              maxScenes={MAX_SCENES}
+              hasLayer={!!selectedLayer}
+              onDuplicateLayer={copyLayer}
+              onDeleteLayer={removeSelected}
+              layerCount={scene.layers.length}
+              maxLayers={MAX_LAYERS}
+            />
             <Timeline
               ref={timelineRef}
               project={project}
               activeScene={sceneIndex}
               selectedLayerId={selectedLayer?.id ?? null}
               onSeek={(t) => playerRef.current?.seek(t)}
-              onSelectLayer={(id) => setSelected(id ? { scene: scene.uid, layer: id } : null)}
+              onSelectLayer={(id) => pick(id ? { scene: scene.uid, layer: id } : null)}
+              onSelectScene={selectScene}
+              musicSelected={musicSelected}
+              onSelectMusic={pickMusic}
               onEditStart={hist.begin}
               onEdit={hist.update}
               onEditEnd={hist.end}
             />
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div role="status" className="fixed bottom-5 left-1/2 z-[80] -translate-x-1/2 rounded-md border border-line-2 bg-panel px-4 py-2 text-sm text-cream shadow-xl">
+          {toast}
         </div>
       )}
     </div>

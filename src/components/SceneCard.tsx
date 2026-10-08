@@ -1,13 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { Check, Clapperboard, Image as ImageIcon, Loader2, Mic2, Sparkles } from "lucide-react";
+import { useRef, useState } from "react";
+import { Check, Clapperboard, Film, Image as ImageIcon, ImagePlus, Loader2, Mic2, Sparkles } from "lucide-react";
 import clsx from "clsx";
+import { acceptFor, checkPickedFile, formatsLabel, limitLabel } from "@/lib/motion/music-utils";
 import { TRANSITIONS, type MotionScene, type TransitionType } from "@/lib/motion/types";
+import { UPLOAD_KINDS } from "@/lib/upload";
 
 export type BusyKind = "voice" | "image" | "video" | "refine";
 
 const TRANSITION_LABELS: Record<TransitionType, string> = { none: "Coupe franche", fade: "Fondu", slide: "Glissement", zoom: "Zoom", wipe: "Balayage" };
+
+/** The kinds of file the user can bring along as a scene's backdrop. */
+export type ImportKind = "image" | "video";
 
 // The inspector for the scene under the playhead (the timeline picks which one that is).
 interface Props {
@@ -31,6 +36,15 @@ interface Props {
   onImage: () => void;
   onVideo: () => void;
   onRefine: (instruction: string) => void;
+  /**
+   * The user picked an image or a video of their own, already checked against the upload limits. The page uploads it and
+   * attaches the asset to the scene. Without it the import buttons are not shown.
+   */
+  onImportMedia?: (kind: ImportKind, file: File) => void;
+  /** An import is under way (which kind): both buttons are disabled and the matching one spins. */
+  importBusy?: ImportKind | null;
+  /** Why importing is not possible right now (not signed in, …): the buttons are disabled and this is said under them. */
+  importDisabledReason?: string;
 }
 
 function Action({
@@ -70,6 +84,59 @@ function Action({
   );
 }
 
+const IMPORTS: { kind: ImportKind; label: string; icon: React.ReactNode }[] = [
+  { kind: "image", label: "Importer une image", icon: <ImagePlus className="h-4 w-4" /> },
+  { kind: "video", label: "Importer une vidéo", icon: <Film className="h-4 w-4" /> },
+];
+
+function ImportButton({
+  kind,
+  label,
+  icon,
+  busy,
+  disabled,
+  title,
+  onPick,
+}: {
+  kind: ImportKind;
+  label: string;
+  icon: React.ReactNode;
+  busy: boolean;
+  disabled: boolean;
+  title: string;
+  onPick: (file: File) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => input.current?.click()}
+        disabled={disabled}
+        aria-busy={busy}
+        title={title}
+        className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-line-2 bg-panel-2 px-2 py-2 text-zinc-400 transition-all hover:border-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-line-2 disabled:hover:text-zinc-400"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : icon}
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider">{label}</span>
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept={acceptFor(kind)}
+        aria-label={kind === "image" ? "Fichier image à importer" : "Fichier vidéo à importer"}
+        disabled={disabled}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = ""; // so that the same file can be picked twice in a row
+          if (file) onPick(file);
+        }}
+        className="hidden"
+      />
+    </>
+  );
+}
+
 export default function SceneCard({
   scene,
   index,
@@ -88,9 +155,19 @@ export default function SceneCard({
   onImage,
   onVideo,
   onRefine,
+  onImportMedia,
+  importBusy = null,
+  importDisabledReason,
 }: Props) {
   const [instruction, setInstruction] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
   const refining = busy === "refine";
+
+  const pickMedia = (kind: ImportKind, file: File) => {
+    const refusal = checkPickedFile(file, kind);
+    setImportError(refusal);
+    if (!refusal) onImportMedia?.(kind, file);
+  };
 
   const submitRefine = () => {
     if (!instruction.trim() || refining) return;
@@ -144,6 +221,35 @@ export default function SceneCard({
             <Clapperboard className="h-4 w-4" />
           </Action>
         </div>
+
+        {onImportMedia && (
+          <div role="group" aria-label="Vos médias" className="space-y-1.5">
+            <p className="label">Vos médias</p>
+            <div className="flex gap-2">
+              {IMPORTS.map(({ kind, label, icon }) => (
+                <ImportButton
+                  key={kind}
+                  kind={kind}
+                  label={label}
+                  icon={icon}
+                  busy={importBusy === kind}
+                  disabled={!!importDisabledReason || importBusy !== null}
+                  title={importDisabledReason ?? (importBusy !== null ? "Import en cours" : `${label} (${formatsLabel(kind)})`)}
+                  onPick={(file) => pickMedia(kind, file)}
+                />
+              ))}
+            </div>
+            <p className="font-mono text-[9px] text-zinc-600">
+              {UPLOAD_KINDS.image.label} : {formatsLabel("image")} · {UPLOAD_KINDS.video.label} : {formatsLabel("video")} ({limitLabel("video")} maximum)
+            </p>
+            {importDisabledReason && <p className="font-mono text-[10px] text-zinc-600">{importDisabledReason}</p>}
+            {importError && (
+              <p role="alert" className="text-xs leading-relaxed text-red-400">
+                {importError}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <label className="label" htmlFor={`narration-${scene.id}`}>

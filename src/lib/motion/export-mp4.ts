@@ -238,7 +238,11 @@ class SinkCursor implements VideoCursor {
   }
 }
 
-/** Fallback when WebCodecs cannot decode the clip: seek a <video> to each frame and wait for 'seeked'. Slow (about 100 ms a frame). */
+/**
+ * Fallback when WebCodecs cannot decode the clip: seek a <video> to each frame and wait for 'seeked'. Slow (tens of
+ * milliseconds a frame, about 100 ms on a long-GOP 1080p clip) and not perfect: 'seeked' can fire before drawImage
+ * sees the new frame, so now and then (about one frame in a hundred) an output frame shows the previous clip frame.
+ */
 class SeekCursor implements VideoCursor {
   private shown = false;
 

@@ -9,10 +9,10 @@ import { signIn, signOut } from "@/auth";
 import cloudinary from "@/lib/cloudinary";
 import { claudeConfig, getAnthropic, type ClaudeTask } from "@/lib/anthropic-client";
 import { allowedEmail, authConfigured } from "@/lib/allowlist";
-import { authorize, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
+import { authorize, claimUploadCheck, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
 import { defaultVideoQuality, maxVideoSeconds, motionCost, refineCost, VOICE_RATES, voiceCost } from "@/lib/pricing";
 import { replicate } from "@/lib/replicate-client";
-import { buildPublicId, checkUploadRequest, isOwnCloudinaryUrl, isUploadKind, ownsPublicId, UPLOAD_KINDS, userSlug, type UploadKind } from "@/lib/upload";
+import { buildPublicId, checkUploadRequest, isUploadKind, ownCloudinaryUrl, ownsPublicId, UPLOAD_KINDS, userSlug, type UploadKind } from "@/lib/upload";
 import { listVoiceProviders, synthesize, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
 import { getVideoModel, videoCost, videoInput, VIDEO_MODELS, VIDEO_QUALITIES, type VideoQuality } from "@/lib/video-models";
 import { projectRequest, sceneRequest, STYLES, systemPrompt, type StyleId } from "@/lib/motion/prompt";
@@ -277,9 +277,6 @@ export async function synthesizeVoice(text: string, provider: VoiceProviderId, v
 // Video generation takes from tens of seconds to minutes, which is longer than a request should
 // stay open: start a Replicate prediction, then let the client poll checkVideoJob.
 
-// Other people's clouds are served from the same host, so the cloud name has to be ours too.
-const isCloudinaryUrl = (value: string) => isOwnCloudinaryUrl(value, cloudinary.config().cloud_name);
-
 export interface VideoJobInput {
   modelId: string;
   prompt: string;
@@ -296,8 +293,9 @@ export async function startVideoJob(input: VideoJobInput) {
 
   const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 500) : "";
   if (!prompt) return { success: false as const, error: "PROMPT_VIDE" };
-  // Replicate fetches this URL, so only accept assets we uploaded ourselves.
-  const imageUrl = input.imageUrl && isCloudinaryUrl(input.imageUrl) ? input.imageUrl : undefined;
+  // Replicate fetches this URL, so only accept assets of our own Cloudinary cloud (others are served from the same host),
+  // and forward the canonical form: the raw string can mean a different host to the fetcher than it does to us.
+  const imageUrl = ownCloudinaryUrl(input.imageUrl, cloudinary.config().cloud_name);
   if (model.needsImage && !imageUrl) return { success: false as const, error: "IMAGE_REQUISE" };
 
   const request = {
@@ -376,7 +374,9 @@ export async function requestUploadSignature(input: { kind: UploadKind; size: nu
   const { cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret } = cloudinary.config();
   if (!cloudName || !apiKey || !apiSecret) return { success: false, error: "CLOUDINARY_NON_CONFIGURÉ" };
 
-  const access = await authorize("upload", 0); // counted per user, but it never eats the dollar cap
+  // The id is recorded with the reservation: confirmUpload only checks ids that were really issued, a limited number of times.
+  const publicId = buildPublicId(request.kind, who.user.id, randomUUID()); // unique: one signature creates at most one asset
+  const access = await authorize("upload", 0, publicId); // counted per user, but it never eats the dollar cap
   if (!access.ok) return { success: false, error: access.error };
   try {
     const spec = UPLOAD_KINDS[request.kind];
@@ -386,8 +386,8 @@ export async function requestUploadSignature(input: { kind: UploadKind; size: nu
     const toSign: Record<string, string> = {
       allowed_formats: spec.formats.join(","),
       context: `uid=${slug}|kind=${request.kind}`,
-      overwrite: "false", // a replayed signature cannot replace a file that was already verified
-      public_id: buildPublicId(request.kind, access.user.id, randomUUID()), // unique: one signature creates at most one asset
+      overwrite: "0", // a replayed signature cannot replace a file that was already verified. "0" is what the Cloudinary SDK itself sends
+      public_id: publicId,
       tags: `neuro-studio,${request.kind},user-${slug}`,
       timestamp: String(Math.round(Date.now() / 1000)), // seconds; a signature is valid for one hour
       type: "upload",
@@ -425,8 +425,10 @@ export async function confirmUpload(input: { kind: UploadKind; publicId: string 
   if (!who.ok) return { success: false, error: who.error };
   const kind = input?.kind;
   if (!isUploadKind(kind)) return { success: false, error: "TYPE_INVALIDE" };
-  // Someone else's asset looks exactly like a missing one.
+  // Someone else's asset looks exactly like a missing one, and so does an id we never issued: neither costs a Cloudinary call.
   if (!ownsPublicId(input.publicId, kind, who.user.id)) return { success: false, error: "UPLOAD_INTROUVABLE" };
+  const claim = await claimUploadCheck(who.user.id, input.publicId);
+  if (claim !== "granted") return { success: false, error: claim === "refused" ? "UPLOAD_INTROUVABLE" : "SERVICE_INDISPONIBLE" };
 
   const spec = UPLOAD_KINDS[kind];
   let asset: Record<string, unknown>;

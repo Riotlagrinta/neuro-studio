@@ -1,9 +1,9 @@
 // Canvas renderer: a pure function of (project, time) → pixels.
 // Preview, scrubbing and video export all call renderFrame, so what you see is what you export.
 
-import { drawCaptions } from "./captions";
+import { activeWordIndex, captionTimings, drawCaptions, layoutCaptions, paginate } from "./captions";
 import { ease, sample } from "./easing";
-import { FRAMES, locate, type Anchor, type Layer, type MotionProject, type MotionScene, type TextLayer } from "./types";
+import { FRAMES, locate, type Anchor, type CaptionsLayer, type Layer, type MotionProject, type MotionScene, type TextLayer } from "./types";
 
 export interface FontStacks {
   sans: string;
@@ -248,11 +248,14 @@ interface TextLayout {
   key: string;
   units: Unit[];
   mode: "line" | "word" | "char";
+  /** Size of the block, before the layer's scale (the box a selection frame has to hug). */
+  width: number;
+  height: number;
 }
 
 const layoutCache = new WeakMap<TextLayer, TextLayout>();
 
-function fontString(layer: TextLayer, fonts: FontStacks): string {
+function fontString(layer: Pick<TextLayer, "font" | "weight" | "size">, fonts: FontStacks): string {
   // The display face only ships a regular weight; asking for bold would be synthesized and smudge it.
   const weight = layer.font === "display" ? 400 : Math.round(layer.weight / 100) * 100;
   return `${weight} ${layer.size}px ${fonts[layer.font]}`;
@@ -318,7 +321,7 @@ function layoutText(ctx: CanvasRenderingContext2D, layer: TextLayer, font: strin
     });
   });
 
-  const layout: TextLayout = { key, units, mode };
+  const layout: TextLayout = { key, units, mode, width: blockW, height: lines.length * lh };
   layoutCache.set(layer, layout);
   return layout;
 }
@@ -368,4 +371,49 @@ function drawText(ctx: CanvasRenderingContext2D, layer: TextLayer, t: number, fo
     ctx.fillText(u.text, u.x, u.y + (1 - e) * rise);
   });
   ctx.globalAlpha = base;
+}
+
+// ---------- measuring ----------
+
+/** When a block is measured: captions show one page at a time, so how big they are depends on the moment. */
+export interface MeasureMoment {
+  /** Scene-local seconds. */
+  t: number;
+  sceneDuration: number;
+}
+
+/**
+ * The size of a text or captions block in layer units (before the layer's scale), from the very same wrapping and
+ * line height as drawText / drawCaptions, so a selection frame hugs the drawn pixels. Text reuses the layout
+ * renderFrame caches. Captions are measured on the page being shown at `moment`, or on their first page without one.
+ */
+export function measureLayer(ctx: CanvasRenderingContext2D, layer: TextLayer | CaptionsLayer, fonts: FontStacks, moment?: MeasureMoment): { w: number; h: number } {
+  const font = fontString(layer, fonts);
+  // measureText reads ctx.font, which the next draw sets again anyway: leave the context as it was found.
+  ctx.save();
+  let size: { width: number; height: number };
+  if (layer.type === "text") {
+    size = layoutText(ctx, layer, font);
+  } else {
+    ctx.font = font;
+    size = layoutCaptions((s) => ctx.measureText(s).width, layer, font, captionsPage(layer, moment));
+  }
+  ctx.restore();
+  return { w: size.width, h: size.height };
+}
+
+/** The words of the page drawCaptions shows at `moment` (the first page without one). */
+function captionsPage(layer: CaptionsLayer, moment?: MeasureMoment): string[] {
+  const to = moment ? Math.min(layer.end ?? moment.sceneDuration, moment.sceneDuration) : layer.start + 1;
+  // A layer whose window is empty draws nothing, but it must still have a size to be grabbed by.
+  let words = captionTimings(layer.text, layer.start, to);
+  if (words.length === 0) words = captionTimings(layer.text, 0, 1);
+  const pages = paginate(words);
+  const current = moment ? Math.max(0, activeWordIndex(words, moment.t)) : 0;
+  let first = 0;
+  for (const page of pages) {
+    if (current < first + page.length) return page.map((w) => w.text);
+    first += page.length;
+  }
+  return [];
 }

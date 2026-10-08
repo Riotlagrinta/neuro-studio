@@ -1,7 +1,10 @@
 import { calls, requests, setHandler } from "./stubs/env-setup";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { setDb } from "./stubs/db-shim";
 import { setUser } from "./stubs/auth-stub";
@@ -11,10 +14,11 @@ import { DAILY_LIMITS } from "../src/lib/access";
 import { upsertUser } from "../src/lib/users";
 import {
   buildPublicId,
+  CONFIRM_ATTEMPTS,
   checkUploadRequest,
   fileFormat,
-  isOwnCloudinaryUrl,
   isUploadKind,
+  ownCloudinaryUrl,
   ownsPublicId,
   planImageResize,
   UPLOAD_KINDS,
@@ -225,10 +229,11 @@ async function pureHelpers() {
     }
   });
 
-  await t("isOwnCloudinaryUrl: our cloud over https on res.cloudinary.com, nothing else", () => {
-    const ok = (u: string) => isOwnCloudinaryUrl(u, "demo");
+  await t("ownCloudinaryUrl: our cloud over https on res.cloudinary.com, nothing else", () => {
+    const ok = (u: string) => ownCloudinaryUrl(u, "demo") !== undefined;
     assert.equal(ok("https://res.cloudinary.com/demo/image/upload/v1/neuro-studio/image/u/n.jpg"), true);
     assert.equal(ok("https://res.cloudinary.com/demo/a.png"), true);
+    assert.equal(ok("https://res.cloudinary.com/demo/a.png?x=1#t=2"), true);
     assert.equal(ok("https://res.cloudinary.com/other/image/upload/a.png"), false, "another cloud");
     assert.equal(ok("https://res.cloudinary.com/demo-evil/a.png"), false, "a cloud whose name starts with ours");
     assert.equal(ok("https://res.cloudinary.com/demo"), false, "no path under the cloud");
@@ -247,8 +252,68 @@ async function pureHelpers() {
     assert.equal(ok("data:image/png;base64,AAAA"), false);
     assert.equal(ok(""), false);
     assert.equal(ok("not a url"), false);
-    assert.equal(isOwnCloudinaryUrl("https://res.cloudinary.com/demo/a.png", undefined), false, "no cloud configured: nothing is ours");
-    assert.equal(isOwnCloudinaryUrl("https://res.cloudinary.com//a.png", ""), false);
+    assert.equal(ownCloudinaryUrl("https://res.cloudinary.com/demo/a.png", undefined), undefined, "no cloud configured: nothing is ours");
+    assert.equal(ownCloudinaryUrl("https://res.cloudinary.com//a.png", ""), undefined);
+  });
+
+  await t("ownCloudinaryUrl: URLs that parsers read differently are refused (a backslash can move the host to evil.io)", () => {
+    for (const hostile of [
+      "https://res.cloudinary.com\\@evil.io/demo/a.png",
+      "https://res.cloudinary.com\\demo\\@evil.io/a.png", // WHATWG: host res.cloudinary.com. curl, PHP, Python: host evil.io
+      "https://res.cloudinary.com\\demo\\a.png",
+      "https://res.cloudinary.com/demo\\..\\other/a.png",
+      "https://res.cloudinary.com/demo/a.png\\",
+      "https://res.cloudin\tary.com/demo/a.png", // WHATWG drops tabs and newlines
+      "https://res.cloudinary.com/demo/a\n.png",
+      "https://res.cloudinary.com/demo/a .png",
+      "https://res.cloudinary.com/demo/a\u0000.png",
+      " https://res.cloudinary.com/demo/a.png",
+      "https://res.cloudinary.com/demo/a.png ",
+      "https://res.cloudinary.com/demo/..%2fother/a.png", // a server that decodes %2f walks out of our cloud
+      "https://res.cloudinary.com/demo/%2e%2e/other/a.png",
+      "https://res.cloudinary.com/demo/x%5c..%5cother/a.png",
+      "https://res.cloudinary.com/demo/%zz/a.png", // malformed escape
+    ]) {
+      assert.equal(ownCloudinaryUrl(hostile, "demo"), undefined, JSON.stringify(hostile));
+    }
+    for (const notAString of [undefined, null, 5, {}, ["https://res.cloudinary.com/demo/a.png"], true]) {
+      assert.equal(ownCloudinaryUrl(notAString, "demo"), undefined, JSON.stringify(notAString));
+    }
+  });
+
+  await t("ownCloudinaryUrl: what it returns is canonical, so every parser reads the same host", () => {
+    assert.equal(ownCloudinaryUrl("HTTPS://Res.Cloudinary.COM:443/demo/image/upload/a.png", "demo"), "https://res.cloudinary.com/demo/image/upload/a.png");
+    assert.equal(ownCloudinaryUrl("https://res.cloudinary.com/demo/image/upload/./a.png", "demo"), "https://res.cloudinary.com/demo/image/upload/a.png");
+    // A triple slash is read by RFC 3986 parsers (Python) as an empty host, and by WHATWG as ours: only the canonical form is unambiguous.
+    assert.equal(ownCloudinaryUrl("https:///res.cloudinary.com/demo/a.png", "demo"), "https://res.cloudinary.com/demo/a.png");
+    // Seeded fuzz of the shapes that make parsers disagree. Whatever is accepted must have res.cloudinary.com as its
+    // authority by the plain RFC 3986 reading too (the same corpus, checked with Python, PHP and Ruby, had 3670 hostile
+    // strings among the 4106 that a host-and-prefix check alone accepts).
+    let seed = 99;
+    const next = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0; // mulberry32
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % n;
+    };
+    const schemes = ["https://", "https:\\\\", "https:/\\", "https:///", "https:\\/"];
+    const separators = ["/", "\\", "/", "\\", "\\\\", "//", "?", "#", ";"];
+    const segments = ["demo", "@evil.io", "evil.io", "x@evil.io", "u:p@evil.io", "..", ".", "a.png", ":80", ":443", "%40evil.io", "@", "demo@evil.io", "%2f", "%5c", "Demo", "image", "upload", "res.cloudinary.com", "@res.cloudinary.com", "\t", " ", "\u0000"];
+    let accepted = 0;
+    let rewritten = 0;
+    for (let i = 0; i < 400000; i++) {
+      let input = schemes[next(schemes.length)] + (next(8) === 0 ? "evil.io" : "res.cloudinary.com");
+      for (let j = next(6) + 1; j > 0; j--) input += separators[next(separators.length)] + segments[next(segments.length)];
+      const out = ownCloudinaryUrl(input, "demo");
+      if (out === undefined) continue;
+      accepted++;
+      if (out !== input) rewritten++;
+      assert.equal(out, new URL(out).href, "canonical: " + JSON.stringify(input));
+      assert.ok(!/[\\\s]/.test(out), "no backslash or space: " + JSON.stringify(out));
+      assert.equal(out.slice("https://".length).split(/[/?#]/)[0], "res.cloudinary.com", "authority: " + JSON.stringify(out));
+      assert.ok(out.startsWith("https://res.cloudinary.com/demo/"), JSON.stringify(out));
+    }
+    assert.ok(accepted > 50 && rewritten > 0, `the corpus must contain accepted and rewritten URLs (${accepted}, ${rewritten})`);
   });
 }
 
@@ -308,7 +373,7 @@ class FakeXhr {
   }
 }
 
-const mediaFake = { duration: 61.5 as number, fails: false };
+const mediaFake = { duration: 61.5 as number, fails: false, hangs: false };
 const imageFake = { width: 4000, height: 3000, fails: false };
 const encoderLog: { type: string; quality: number; width: number; height: number; opaque: boolean }[] = [];
 const canvasLog = { fills: 0, draws: [] as [number, number][], bitmapsClosed: 0 };
@@ -373,6 +438,7 @@ function installBrowser() {
       };
       Object.defineProperty(media, "src", {
         set() {
+          if (mediaFake.hangs) return; // iOS Safari never loads a detached media element
           setTimeout(() => (mediaFake.fails ? media.onerror?.() : media.onloadedmetadata?.()), 0);
         },
       });
@@ -526,9 +592,9 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.equal(r.apiKey, "k");
     assert.deepEqual(Object.keys(r.fields).sort(), ["allowed_formats", "context", "overwrite", "public_id", "signature", "tags", "timestamp", "type"]);
     assert.equal(r.fields.signature, signWith(r.fields, SECRET));
-    assert.notEqual(r.fields.signature, signWith({ ...r.fields, overwrite: "true" }, SECRET), "the signature binds overwrite");
+    assert.notEqual(r.fields.signature, signWith({ ...r.fields, overwrite: "1" }, SECRET), "the signature binds overwrite");
     assert.notEqual(r.fields.signature, signWith(r.fields, "another-secret"));
-    assert.equal(r.fields.overwrite, "false");
+    assert.equal(r.fields.overwrite, "0", "the value the Cloudinary SDK itself sends for false");
     assert.equal(r.fields.type, "upload");
     assert.equal(r.fields.allowed_formats, "mp3,m4a,wav,ogg,opus,aac,flac");
     assert.equal(r.fields.context, `uid=${A.id}|kind=audio`);
@@ -538,6 +604,8 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.ok(ownsPublicId(r.fields.public_id, "audio", A.id));
     assert.ok(!ownsPublicId(r.fields.public_id, "audio", B.id));
     assert.ok(Object.values(r.fields).every((v) => !v.includes("&")), "no & in a signed value");
+    const rows = (await db.query<{ ref: string; kind: string; user_id: string }>(`SELECT ref, kind, user_id FROM usage_events`)).rows;
+    assert.deepEqual(rows, [{ ref: r.fields.public_id, kind: "upload", user_id: A.id }], "the issued id is recorded with the reservation");
     untouched();
   });
   await t("each kind: its own endpoint, formats and public id folder", async () => {
@@ -579,7 +647,7 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.deepEqual(Object.keys(forged.fields).sort(), Object.keys(plain.fields).sort());
     const text = JSON.stringify(forged);
     for (const needle of ["victim", "elsewhere", "w_10", "admin", "someone-else", "exe", "evil.example", "forged", "private", "raw"]) assert.ok(!text.includes(needle), needle);
-    assert.equal(forged.fields.overwrite, "false");
+    assert.equal(forged.fields.overwrite, "0");
     assert.equal(forged.fields.signature, signWith(forged.fields, SECRET));
   });
   await t("fields hold none of the four things Cloudinary never signs, and the secret never leaves the server", async () => {
@@ -741,30 +809,30 @@ async function scenario(variant: "legacy" | "fresh") {
   });
   await t("an answer without usable bytes or an https URL is refused and destroyed; the format is compared in lower case", async () => {
     await reset();
-    const id = await issue("audio");
-    for (const over of [{ bytes: undefined }, { bytes: "4200000" }, { bytes: 0 }, { bytes: -1 }, { bytes: NaN }, { secure_url: `http://res.cloudinary.com/demo/video/upload/${id}.mp3` }, { secure_url: undefined }]) {
+    for (const over of [{ bytes: undefined }, { bytes: "4200000" }, { bytes: 0 }, { bytes: -1 }, { bytes: NaN }, { secure_url: "http://res.cloudinary.com/demo/video/upload/x.mp3" }, { secure_url: undefined }]) {
       destroyCalls.length = 0;
+      const id = await issue("audio"); // one id is checked at most CONFIRM_ATTEMPTS times
       resourceImpl = async (publicId) => assetFor(publicId, over);
       assert.equal((await confirm("audio", id)).success, false, JSON.stringify(over));
       assert.equal(destroyCalls.length, 1, JSON.stringify(over));
     }
     destroyCalls.length = 0;
     resourceImpl = async (publicId) => assetFor(publicId, { format: "MP3" });
-    assert.equal((await confirm("audio", id)).success, true);
+    assert.equal((await confirm("audio", await issue("audio"))).success, true);
   });
   await t("a missing asset is UPLOAD_INTROUVABLE (nothing to destroy); other Cloudinary failures are SERVICE_INDISPONIBLE and never log credentials", async () => {
     await reset();
-    const id = await issue("audio");
     // The SDK rejects with the parsed body plus the request it made, which includes the API credentials.
     const sdkRejection = (httpCode: number) => ({ error: { message: "Resource not found", http_code: httpCode }, request_options: { auth: `k:${SECRET}` }, query_params: `api_secret=${SECRET}` });
     resourceImpl = async () => {
       throw sdkRejection(404);
     };
-    assert.deepEqual(await confirm("audio", id), { success: false, error: "UPLOAD_INTROUVABLE" });
+    assert.deepEqual(await confirm("audio", await issue("audio")), { success: false, error: "UPLOAD_INTROUVABLE" });
     for (const failure of [sdkRejection(420), sdkRejection(500), new Error(`connect ECONNREFUSED ${SECRET}`), { error: { message: "x" } }, "boom"]) {
       resourceImpl = async () => {
         throw failure;
       };
+      const id = await issue("audio");
       const { result, logged } = await silently(() => confirm("audio", id));
       assert.deepEqual(result, { success: false, error: "SERVICE_INDISPONIBLE" });
       assert.ok(!logged.includes(`k:${SECRET}`) && !logged.includes("api_secret"), "the rejection object is not logged: " + logged);
@@ -784,6 +852,91 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.ok(!logged.includes(SECRET));
   });
 
+  // ---------------------------------------------------------------- only issued ids reach Cloudinary, a few times each
+  console.log("confirmUpload: issued ids only");
+  await t("a well-formed id that was never issued is refused without a Cloudinary call (the Admin API budget is account-wide)", async () => {
+    await reset();
+    resourceImpl = async (publicId) => assetFor(publicId);
+    const forged = (i: number) => buildPublicId("audio", A.id, `forged-${String(i).padStart(8, "0")}`);
+    const results = await Promise.all(Array.from({ length: 60 }, (_, i) => confirm("audio", forged(i))));
+    assert.ok(results.every((r) => !r.success && r.error === "UPLOAD_INTROUVABLE"));
+    untouched();
+    assert.equal(await usage(), 0);
+  });
+  await t("an id is checked at most CONFIRM_ATTEMPTS times, parallel calls included", async () => {
+    await reset();
+    const id = await issue("audio");
+    resourceImpl = async (publicId) => assetFor(publicId);
+    const results = await Promise.all(Array.from({ length: 20 }, () => confirm("audio", id)));
+    assert.equal(results.filter((r) => r.success).length, CONFIRM_ATTEMPTS);
+    assert.ok(results.filter((r) => !r.success).every((r) => !r.success && r.error === "UPLOAD_INTROUVABLE"));
+    assert.equal(adminCalls.length, CONFIRM_ATTEMPTS);
+    assert.equal(Number((await db.query<{ n: number }>(`SELECT confirm_attempts AS n FROM usage_events WHERE ref = $1`, [id])).rows[0].n), CONFIRM_ATTEMPTS);
+  });
+  await t("failed checks use up attempts too: one id cannot be hammered while Cloudinary is failing", async () => {
+    await reset();
+    const id = await issue("audio");
+    resourceImpl = async () => {
+      throw { error: { message: "Rate limit exceeded", http_code: 420 } };
+    };
+    const { result } = await silently(async () => {
+      const outcomes: string[] = [];
+      for (let i = 0; i < CONFIRM_ATTEMPTS + 2; i++) {
+        const r = await confirm("audio", id);
+        outcomes.push(r.success ? "ok" : r.error);
+      }
+      return outcomes;
+    });
+    assert.deepEqual(result, [...Array<string>(CONFIRM_ATTEMPTS).fill("SERVICE_INDISPONIBLE"), "UPLOAD_INTROUVABLE", "UPLOAD_INTROUVABLE"]);
+    assert.equal(adminCalls.length, CONFIRM_ATTEMPTS);
+  });
+  await t("a refunded signature and an id older than 24 h cannot be checked", async () => {
+    await reset();
+    resourceImpl = async (publicId) => assetFor(publicId);
+    const refunded = await issue("audio");
+    await db.query(`UPDATE usage_events SET refunded = true WHERE ref = $1`, [refunded]);
+    const old = await issue("audio");
+    await db.query(`UPDATE usage_events SET created_at = now() - interval '25 hours' WHERE ref = $1`, [old]);
+    for (const id of [refunded, old]) assert.deepEqual(await confirm("audio", id), { success: false, error: "UPLOAD_INTROUVABLE" });
+    untouched();
+  });
+  await t("when the database cannot say whether the id was issued, Cloudinary is not asked, and no attempt is used up", async () => {
+    await reset();
+    const id = await issue("audio");
+    resourceImpl = async (publicId) => assetFor(publicId);
+    await db.exec(`ALTER TABLE usage_events RENAME COLUMN confirm_attempts TO confirm_attempts_gone`);
+    const { result } = await silently(() => confirm("audio", id));
+    await db.exec(`ALTER TABLE usage_events RENAME COLUMN confirm_attempts_gone TO confirm_attempts`);
+    assert.deepEqual(result, { success: false, error: "SERVICE_INDISPONIBLE" });
+    untouched();
+    assert.equal((await confirm("audio", id)).success, true, "and the same id works once the database is back");
+  });
+
+  // ---------------------------------------------------------------- reserve_usage
+  console.log("reserve_usage (the atomic reservation behind authorize)");
+  await t("reserve_usage locks the user first, in a VOLATILE function: what keeps parallel requests honest on a real Postgres", async () => {
+    // PGlite runs one statement at a time and cannot show the race (100 parallel requests got up to 100 reservations for a limit of 40 before the lock):
+    // this guards the two properties that fix it, and TEST_PG_URL runs the real thing (see the last section).
+    const rows = (await db.query<{ prosrc: string; provolatile: string }>(`SELECT prosrc, provolatile FROM pg_proc WHERE proname = 'reserve_usage'`)).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provolatile, "v", "STABLE would reuse the caller's snapshot, which was taken before the lock");
+    assert.match(rows[0].prosrc, /pg_advisory_xact_lock\(hashtextextended\(p_user::text, 0\)\)/);
+    assert.ok(rows[0].prosrc.indexOf("pg_advisory_xact_lock") < rows[0].prosrc.indexOf("INSERT INTO usage_events"), "lock first, then count and insert");
+  });
+  await t("reserve_usage: the per-kind limit, the dollar cap, the ref, and NULL when refused", async () => {
+    await reset();
+    const reserve = async (kind: string, cost: number, limit: number, cap: number, ref: string | null = null) =>
+      (await db.query<{ id: string | null }>(`SELECT reserve_usage($1::uuid, $2::text, $3::numeric, $4::int, $5::numeric, $6::text) AS id`, [A.id, kind, cost, limit, cap, ref])).rows[0].id;
+    assert.ok(await reserve("upload", 0, 2, 3, "r1"));
+    assert.ok(await reserve("upload", 0, 2, 3));
+    assert.equal(await reserve("upload", 0, 2, 3), null, "limit of the kind");
+    assert.ok(await reserve("video", 2, 8, 3), "another kind has its own count");
+    assert.equal(await reserve("video", 1.01, 8, 3), null, "2 + 1.01 is over the cap of 3");
+    assert.ok(await reserve("video", 1, 8, 3), "exactly the cap");
+    assert.equal(await usage(), 4);
+    assert.equal(await usage("WHERE ref = 'r1' AND kind = 'upload'"), 1);
+  });
+
   // ---------------------------------------------------------------- res.cloudinary.com URLs given to Replicate
   console.log("images given to the video models");
   const predictionStub = () => setHandler(() => json({ id: "zzzz1234yyyy", status: "starting", urls: {}, model: "m", version: "v", input: {}, created_at: new Date().toISOString() }, 201));
@@ -797,6 +950,8 @@ async function scenario(variant: "legacy" | "fresh") {
       "https://res.cloudinary.com.evil.io/demo/a.png",
       "https://res.cloudinary.com/demo/../other/a.png",
       "https://res.cloudinary.com@evil.io/demo/a.png",
+      "https://res.cloudinary.com\\demo\\@evil.io/a.png", // WHATWG reads host res.cloudinary.com, curl and Python read evil.io
+      "https://res.cloudinary.com/demo/..%2fother/a.png",
     ]) {
       const r = await wan(url);
       assert.equal(r.success === false && r.error, "IMAGE_REQUISE", url);
@@ -810,6 +965,14 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.equal((await wan("https://res.cloudinary.com/demo/image/upload/v1/neuro-studio/image/u/n.jpg")).success, true);
     assert.equal((await wan(`https://res.cloudinary.com/demo/image/upload/v1/${buildPublicId("image", A.id, NONCE)}.jpg`)).success, true);
     assert.equal(requests.filter((r) => r.url.includes("/predictions")).length, 2);
+  });
+  await t("…and forwards the canonical URL, never the string it was given; a non-string is refused", async () => {
+    await reset();
+    predictionStub();
+    assert.equal((await wan("HTTPS://Res.Cloudinary.com:443/demo/image/upload/./v1/a.png")).success, true);
+    assert.equal(requests.filter((r) => r.url.includes("/predictions")).at(-1)!.body.input.image, "https://res.cloudinary.com/demo/image/upload/v1/a.png");
+    const array = await actions.startVideoJob({ modelId: "wan-fast", prompt: "waves", ratio: "16:9", duration: 5, imageUrl: ["https://res.cloudinary.com/demo/a.png"] as never });
+    assert.equal(array.success === false && array.error, "IMAGE_REQUISE");
   });
 
   // ---------------------------------------------------------------- uploadFile, with a fake browser
@@ -988,6 +1151,69 @@ async function scenario(variant: "legacy" | "fresh") {
     assert.equal(xhrLog.length, 0);
   });
 
+  // The pause before a retry is a second or more: run those tests with the long timers shortened.
+  const quickTimers = async <T,>(run: () => Promise<T>): Promise<T> => {
+    const real = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => real(fn, ms !== undefined && ms >= 500 ? 5 : ms, ...rest)) as typeof setTimeout;
+    try {
+      return await run();
+    } finally {
+      globalThis.setTimeout = real;
+    }
+  };
+  await t("a hiccup while checking the upload is retried: one signature, the file is not lost", async () => {
+    await reset();
+    let reads = 0;
+    resourceImpl = async (publicId) => {
+      if (++reads === 1) throw { error: { message: "Internal error", http_code: 500 } };
+      return echoAsset()(publicId);
+    };
+    const { result } = await silently(() => quickTimers(() => uploadFile(mp3(), "audio")));
+    assert.equal(result.format, "mp3");
+    assert.equal(xhrLog.length, 1, "the file is sent once");
+    assert.equal(adminCalls.length, 2);
+    assert.equal(await usage("WHERE kind = 'upload'"), 1, "no second signature");
+  });
+  await t("a check that keeps failing says the file was sent but not verified, and does not claim the attempt was free", async () => {
+    await reset();
+    resourceImpl = async () => {
+      throw { error: { message: "Internal error", http_code: 500 } };
+    };
+    const { result } = await silently(() => quickTimers(() => failsWith(() => uploadFile(mp3(), "audio"))));
+    assert.ok(result instanceof UploadError);
+    assert.match(result.message, /Le fichier est envoyé, mais sa vérification a échoué/);
+    assert.ok(!/n'a pas été comptée/.test(result.message));
+    assert.equal(adminCalls.length, CONFIRM_ATTEMPTS, "as many reads as the server allows, no more");
+    assert.equal(xhrLog.length, 1);
+  });
+  await t("cancelling while waiting to retry the check stops there", async () => {
+    await reset();
+    resourceImpl = async () => {
+      throw { error: { message: "Internal error", http_code: 500 } };
+    };
+    const controller = new AbortController();
+    const { result } = await silently(async () => {
+      const pending = failsWith(() => uploadFile(mp3(), "audio", { signal: controller.signal }));
+      for (let i = 0; i < 200 && adminCalls.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+      controller.abort();
+      return pending;
+    });
+    assert.equal(result.name, "AbortError");
+    assert.equal(adminCalls.length, 1, "no second read after the cancel");
+  });
+  await t("a browser that never reads the duration does not hold up a finished upload for long", async () => {
+    await reset();
+    mediaFake.hangs = true;
+    resourceImpl = async (publicId) => echoAsset({ duration: undefined })(publicId);
+    const started = Date.now();
+    const r = await uploadFile(mp3(), "audio");
+    const elapsed = Date.now() - started;
+    mediaFake.hangs = false;
+    assert.equal(r.duration, undefined);
+    assert.equal(r.format, "mp3");
+    assert.ok(elapsed < 4000, `waited ${elapsed} ms (the fallback of the duration reader is 10 s)`);
+  });
+
   await t("cancelling during the upload aborts the request and rejects with an AbortError", async () => {
     await reset();
     xhrScript.push({ hang: true });
@@ -1099,10 +1325,57 @@ async function scenario(variant: "legacy" | "fresh") {
   await reset();
 }
 
+// ============================================================================================ real PostgreSQL, opt-in
+
+// PGlite runs one statement at a time, so it cannot show requests racing each other. With TEST_PG_URL pointing at a
+// scratch database (psql and pgbench installed), the same reservations come from 100 parallel connections.
+async function parallelRequests() {
+  console.log("\n=== parallel requests on a real PostgreSQL ===");
+  const url = process.env.TEST_PG_URL;
+  if (!url) {
+    console.log("  skipped - set TEST_PG_URL to a scratch database (needs psql and pgbench)");
+    return;
+  }
+  const psql = (sql: string) => execFileSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-X", "-q", "-At", "-c", sql], { encoding: "utf8" }).trim();
+  const bench = (script: string) => {
+    const file = join(mkdtempSync(join(tmpdir(), "neuro-pgbench-")), "script.sql");
+    writeFileSync(file, script);
+    execFileSync("pgbench", ["-n", "-c", "100", "-j", "8", "-t", "1", "-f", file, url], { stdio: "ignore" });
+  };
+  execFileSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-X", "-q", "-f", "db/schema.sql"], { stdio: "ignore" });
+  const user = psql(`INSERT INTO users (email) VALUES ('race-' || gen_random_uuid() || '@example.com') RETURNING id`).split("\n")[0];
+  const rows = () => psql(`SELECT count(*) || ' ' || COALESCE(sum(cost_usd), 0)::float FROM usage_events WHERE user_id = '${user}'`);
+
+  await t("100 clients at once get exactly the daily limit of signatures, round after round", () => {
+    for (let round = 0; round < 3; round++) {
+      psql(`DELETE FROM usage_events WHERE user_id = '${user}'`);
+      bench(`SELECT reserve_usage('${user}'::uuid, 'upload', 0, ${DAILY_LIMITS.upload}, 3, NULL);`);
+      assert.equal(rows(), `${DAILY_LIMITS.upload} 0`, `round ${round + 1}`);
+    }
+  });
+  await t("100 clients at once cannot spend past the dollar cap", () => {
+    psql(`DELETE FROM usage_events WHERE user_id = '${user}'`);
+    bench(`SELECT reserve_usage('${user}'::uuid, 'video', 0.5, 100, 3, NULL);`);
+    assert.equal(rows(), "6 3");
+  });
+  await t("100 clients checking one issued id take CONFIRM_ATTEMPTS attempts, no more (same predicate as claimUploadCheck)", () => {
+    psql(`DELETE FROM usage_events WHERE user_id = '${user}'`);
+    psql(`INSERT INTO usage_events (user_id, kind, ref) VALUES ('${user}', 'upload', 'neuro-studio/audio/race/00000000')`);
+    bench(
+      `UPDATE usage_events SET confirm_attempts = confirm_attempts + 1 WHERE user_id = '${user}'::uuid AND kind = 'upload' ` +
+        `AND ref = 'neuro-studio/audio/race/00000000' AND NOT refunded AND created_at > now() - interval '24 hours' ` +
+        `AND confirm_attempts < ${CONFIRM_ATTEMPTS} RETURNING id;`,
+    );
+    assert.equal(psql(`SELECT confirm_attempts FROM usage_events WHERE user_id = '${user}'`), String(CONFIRM_ATTEMPTS));
+  });
+  psql(`DELETE FROM users WHERE id = '${user}'`);
+}
+
 (async () => {
   await pureHelpers();
   await scenario("legacy");
   await scenario("fresh");
+  await parallelRequests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

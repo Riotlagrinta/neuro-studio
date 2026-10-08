@@ -29,6 +29,9 @@ export const UPLOAD_KINDS: Record<UploadKind, UploadKindSpec> = {
   video: { resourceType: "video", formats: ["mp4", "mov", "webm"], maxBytes: 100 * MB, label: "Vidéo" },
 };
 
+/** How many times one issued upload may be checked: the first time, plus a retry or two when the hosting service hiccups. */
+export const CONFIRM_ATTEMPTS = 3;
+
 export const isUploadKind = (value: unknown): value is UploadKind =>
   typeof value === "string" && Object.hasOwn(UPLOAD_KINDS, value); // hasOwn: a forged "constructor" or "__proto__" must not pass
 
@@ -51,7 +54,7 @@ export function buildPublicId(kind: UploadKind, userId: string, nonce: string): 
   return `neuro-studio/${kind}/${slug}/${nonce}`;
 }
 
-/** Only a public id we issued to this user, for this kind, can be confirmed by them. */
+/** Only a public id of this shape, for this user and this kind, can be confirmed by them (and only if it was really issued: see claimUploadCheck). */
 export function ownsPublicId(publicId: unknown, kind: UploadKind, userId: string): boolean {
   const slug = userSlug(userId);
   if (typeof publicId !== "string" || !slug) return false;
@@ -110,20 +113,25 @@ export function planImageResize(width: number, height: number, bytes: number): I
 // Our own Cloudinary account
 // ---------------------------------------------------------------------------
 
-/** An https delivery URL of OUR Cloudinary cloud. Other people's clouds also live on res.cloudinary.com, under their own name. */
-export function isOwnCloudinaryUrl(value: string, cloudName: string | undefined): boolean {
-  if (!cloudName) return false;
+/**
+ * The canonical form of an https delivery URL of OUR Cloudinary cloud, or undefined for anything else (other people's
+ * clouds also live on res.cloudinary.com, under their own name). Forward the RETURNED string, never the input: parsers
+ * disagree on `https://res.cloudinary.com\demo\@evil.io/a.png` (WHATWG reads host res.cloudinary.com, RFC 3986 parsers
+ * such as curl or Python read evil.io), whereas the canonical form is read the same way everywhere.
+ */
+export function ownCloudinaryUrl(value: unknown, cloudName: string | undefined): string | undefined {
+  // Backslashes, spaces and control characters are where parsers diverge (WHATWG also drops tabs and newlines silently).
+  if (!cloudName || typeof value !== "string" || /[\s\\]|\p{Cc}/u.test(value)) return undefined;
   try {
     const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.hostname === "res.cloudinary.com" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.pathname.startsWith(`/${cloudName}/`)
-    );
+    if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com" || url.port !== "" || url.username !== "" || url.password !== "") {
+      return undefined;
+    }
+    if (!url.pathname.startsWith(`/${cloudName}/`)) return undefined;
+    // %2f and %5c survive URL parsing, but a server that decodes them would walk out of our cloud's folder.
+    if (/\\|(^|\/)\.\.?(\/|$)/.test(decodeURIComponent(url.pathname))) return undefined;
+    return url.href;
   } catch {
-    return false;
+    return undefined; // not a URL, or a malformed %-escape
   }
 }

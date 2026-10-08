@@ -6,6 +6,7 @@
 import { auth } from "@/auth";
 import { allowedEmail } from "./allowlist";
 import { dailyCostCapUsd } from "./pricing";
+import { CONFIRM_ATTEMPTS } from "./upload";
 
 export type UsageKind = "motion" | "refine" | "voice" | "image" | "video" | "upload";
 
@@ -42,12 +43,14 @@ export async function requireUser(): Promise<{ ok: true; user: SessionUser } | {
 }
 
 /**
- * Reserves one action of `kind` costing about `estimatedCostUsd`. Checking the limits and recording
- * the event happen in a single statement. Call `refund` if the provider then fails.
+ * Reserves one action of `kind` costing about `estimatedCostUsd`, optionally tagged with an external id `ref`.
+ * Checking the limits and recording the event happen in one atomic call (reserve_usage, db/schema.sql: it locks the
+ * user first, so parallel requests cannot all pass the check). Call `refund` if the provider then fails.
  */
 export async function authorize(
   kind: UsageKind,
   estimatedCostUsd: number,
+  ref?: string,
 ): Promise<{ ok: true; user: SessionUser; eventId: string } | { ok: false; error: AccessError }> {
   const who = await requireUser();
   if (!who.ok) return who;
@@ -55,20 +58,13 @@ export async function authorize(
     const { sql } = await import("./db");
     const cost = Math.max(0, estimatedCostUsd);
     const rows = await sql`
-      WITH used AS (
-        SELECT COUNT(*) FILTER (WHERE kind = ${kind}::text) AS n,
-               COALESCE(SUM(cost_usd), 0) AS spent
-        FROM usage_events
-        WHERE user_id = ${who.user.id}::uuid AND NOT refunded AND created_at > now() - interval '24 hours'
-      )
-      INSERT INTO usage_events (user_id, kind, cost_usd)
-      SELECT ${who.user.id}::uuid, ${kind}::text, ${cost}::numeric
-      FROM used
-      WHERE n < ${DAILY_LIMITS[kind]}::int AND spent + ${cost}::numeric <= ${dailyCostCapUsd()}::numeric
-      RETURNING id
+      SELECT reserve_usage(
+        ${who.user.id}::uuid, ${kind}::text, ${cost}::numeric, ${DAILY_LIMITS[kind]}::int, ${dailyCostCapUsd()}::numeric, ${ref ?? null}::text
+      ) AS id
     `;
-    if (rows.length === 0) return { ok: false, error: "QUOTA_ATTEINTE" };
-    return { ok: true, user: who.user, eventId: String(rows[0].id) };
+    const id = rows[0]?.id;
+    if (id === null || id === undefined) return { ok: false, error: "QUOTA_ATTEINTE" };
+    return { ok: true, user: who.user, eventId: String(id) };
   } catch (error) {
     console.error("authorize failed:", error);
     return { ok: false, error: "SERVICE_INDISPONIBLE" };
@@ -105,6 +101,27 @@ export async function ownsVideoJob(userId: string, ref: string): Promise<boolean
     return rows.length > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Takes one of the CONFIRM_ATTEMPTS checks of an upload we issued to this user (the event carries its public id as `ref`).
+ * This is what makes "issued" true, and what keeps a user from spending the account-wide Cloudinary Admin API budget
+ * (500 calls an hour on the Free plan) with made-up or repeated ids: the Admin API is only called after a "granted".
+ */
+export async function claimUploadCheck(userId: string, publicId: string): Promise<"granted" | "refused" | "unavailable"> {
+  try {
+    const { sql } = await import("./db");
+    const rows = await sql`
+      UPDATE usage_events SET confirm_attempts = confirm_attempts + 1
+      WHERE user_id = ${userId}::uuid AND kind = 'upload' AND ref = ${publicId}::text AND NOT refunded
+        AND created_at > now() - interval '24 hours' AND confirm_attempts < ${CONFIRM_ATTEMPTS}::int
+      RETURNING id
+    `;
+    return rows.length > 0 ? "granted" : "refused";
+  } catch (error) {
+    console.error("claimUploadCheck failed:", error);
+    return "unavailable";
   }
 }
 
