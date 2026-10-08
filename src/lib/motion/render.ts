@@ -182,7 +182,7 @@ function drawLayer(
       drawText(ctx, layer, t, fonts);
       break;
     case "captions":
-      drawCaptions(ctx, layer, t, fonts);
+      drawCaptions(ctx, layer, t, fonts, scene.duration);
       break;
   }
   ctx.restore();
