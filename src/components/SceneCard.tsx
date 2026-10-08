@@ -1,37 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Clapperboard, Eye, Image as ImageIcon, Loader2, Mic2, Sparkles } from "lucide-react";
+import { Check, Clapperboard, Image as ImageIcon, Loader2, Mic2, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import type { MotionScene } from "@/lib/motion/types";
 
 export type BusyKind = "voice" | "image" | "video" | "refine";
 
+// The inspector for the scene under the playhead (the timeline picks which one that is).
 interface Props {
   scene: MotionScene;
   index: number;
-  active: boolean;
+  total: number;
   busy?: BusyKind;
   /** Progress or error text for this scene. */
   note?: { text: string; error: boolean };
   voiceReady: boolean;
+  imageReady: boolean;
   videoReady: boolean;
   /** The selected video engine needs a scene image first (and there is none yet). */
   videoBlocked: boolean;
   motionReady: boolean;
   onChange: (patch: Partial<MotionScene>) => void;
-  onSeek: () => void;
   onVoice: () => void;
   onImage: () => void;
   onVideo: () => void;
   onRefine: (instruction: string) => void;
 }
 
-function ActionButton({
+function Action({
   label,
   done,
   loading,
   disabled,
+  title,
   onClick,
   children,
 }: {
@@ -39,6 +41,7 @@ function ActionButton({
   done?: boolean;
   loading?: boolean;
   disabled?: boolean;
+  title?: string;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -46,15 +49,14 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled || loading}
-      title={label}
-      aria-label={label}
+      title={title ?? label}
       className={clsx(
-        "relative flex h-10 w-10 items-center justify-center rounded-xl border transition-all disabled:cursor-not-allowed disabled:opacity-40",
-        done ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300" : "border-[#2a2a2a] bg-[#141414] text-zinc-400 hover:border-indigo-500 hover:text-white",
+        "flex flex-1 flex-col items-center gap-1.5 rounded-lg border px-2 py-2.5 transition-all disabled:cursor-not-allowed disabled:opacity-35",
+        done ? "border-mint/40 bg-mint/10 text-mint" : "border-line-2 bg-panel-2 text-zinc-400 hover:border-accent hover:text-white",
       )}
     >
-      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : children}
-      {done && !loading && <Check className="absolute -right-1 -top-1 h-3.5 w-3.5 rounded-full bg-indigo-500 p-0.5 text-white" />}
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : done ? <Check className="h-4 w-4" /> : children}
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-wider">{label}</span>
     </button>
   );
 }
@@ -62,15 +64,15 @@ function ActionButton({
 export default function SceneCard({
   scene,
   index,
-  active,
+  total,
   busy,
   note,
   voiceReady,
+  imageReady,
   videoReady,
   videoBlocked,
   motionReady,
   onChange,
-  onSeek,
   onVoice,
   onImage,
   onVideo,
@@ -86,89 +88,106 @@ export default function SceneCard({
   };
 
   return (
-    <div className={clsx("space-y-4 rounded-2xl border bg-[#0a0a0a] p-5 transition-colors", active ? "border-indigo-500/60" : "border-[#1a1a1a]")}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#333] bg-[#1a1a1a] text-xs font-bold">
-            {String(index + 1).padStart(2, "0")}
-          </span>
-          <label className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-            <input
-              type="number"
-              min={1.5}
-              max={40}
-              step={0.1}
-              value={scene.duration}
-              onChange={(e) => onChange({ duration: Math.min(40, Math.max(1.5, Number(e.target.value) || scene.duration)) })}
-              className="w-16 rounded-md border border-[#222] bg-black px-2 py-1 text-right font-mono text-xs text-zinc-200 outline-none focus:border-indigo-500/50"
-            />
-            s
-          </label>
-          <span className="hidden text-[10px] font-bold uppercase tracking-widest text-zinc-600 sm:inline">
-            {scene.layers.length} calques · {scene.transition.type}
-          </span>
+    <section className="rounded-xl border border-line bg-panel" aria-label={`Inspecteur de la scène ${index + 1}`}>
+      <div className="flex items-end justify-between gap-3 border-b border-line px-4 py-3">
+        <div>
+          <p className="label">
+            Scène {String(index + 1).padStart(2, "0")} / {String(total).padStart(2, "0")}
+          </p>
+          <p className="mt-0.5 font-mono text-[11px] text-zinc-500">
+            {scene.layers.length} calques · transition {scene.transition.type}
+          </p>
         </div>
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-500">
+          <input
+            type="number"
+            min={1.5}
+            max={40}
+            step={0.1}
+            value={scene.duration}
+            onChange={(e) => onChange({ duration: Math.min(40, Math.max(1.5, Number(e.target.value) || scene.duration)) })}
+            aria-label="Durée de la scène en secondes"
+            className="w-16 rounded-md border border-line-2 bg-ink px-2 py-1 text-right text-sm text-cream outline-none focus:border-accent"
+          />
+          s
+        </label>
+      </div>
+
+      <div className="space-y-4 p-4">
         <div className="flex gap-2">
-          <ActionButton label="Voir cette scène" onClick={onSeek}>
-            <Eye className="h-4 w-4" />
-          </ActionButton>
-          <ActionButton label="Générer la voix" done={!!scene.audioUrl} loading={busy === "voice"} disabled={!voiceReady || !scene.voiceOver.trim()} onClick={onVoice}>
+          <Action label="Voix" done={!!scene.audioUrl} loading={busy === "voice"} disabled={!voiceReady || !scene.voiceOver.trim()} onClick={onVoice}>
             <Mic2 className="h-4 w-4" />
-          </ActionButton>
-          <ActionButton label="Générer l'image de fond" done={!!scene.imageUrl} loading={busy === "image"} disabled={!scene.visualPrompt.trim()} onClick={onImage}>
+          </Action>
+          <Action label="Image" done={!!scene.imageUrl} loading={busy === "image"} disabled={!imageReady || !scene.visualPrompt.trim()} onClick={onImage}>
             <ImageIcon className="h-4 w-4" />
-          </ActionButton>
-          <ActionButton
-            label={videoBlocked ? "Générez d'abord l'image (ce moteur part d'une image)" : "Générer un plan vidéo IA"}
+          </Action>
+          <Action
+            label="Vidéo IA"
             done={!!scene.videoUrl}
             loading={busy === "video"}
             disabled={!videoReady || videoBlocked || !scene.visualPrompt.trim()}
+            title={videoBlocked ? "Générez d'abord l'image (ce moteur part d'une image)" : "Générer un plan vidéo IA"}
             onClick={onVideo}
           >
             <Clapperboard className="h-4 w-4" />
-          </ActionButton>
+          </Action>
         </div>
-      </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">
-          <label className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Narration</label>
+          <label className="label" htmlFor={`narration-${scene.id}`}>
+            Narration
+          </label>
           <textarea
+            id={`narration-${scene.id}`}
             value={scene.voiceOver}
             onChange={(e) => onChange({ voiceOver: e.target.value })}
-            className="min-h-[96px] w-full resize-none rounded-xl border border-[#1a1a1a] bg-black p-3 text-sm leading-relaxed text-zinc-100 outline-none transition-colors focus:border-indigo-500/50"
+            className="min-h-[88px] w-full resize-none rounded-lg border border-line-2 bg-ink p-3 text-sm leading-relaxed text-cream outline-none transition-colors focus:border-accent"
           />
         </div>
+
         <div className="space-y-1.5">
-          <label className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Fond IA — prompt (anglais)</label>
+          <label className="label" htmlFor={`prompt-${scene.id}`}>
+            Fond IA — prompt (anglais)
+          </label>
           <textarea
+            id={`prompt-${scene.id}`}
             value={scene.visualPrompt}
             onChange={(e) => onChange({ visualPrompt: e.target.value })}
-            className="min-h-[96px] w-full resize-none rounded-xl border border-[#1a1a1a] bg-black p-3 text-sm italic leading-relaxed text-zinc-400 outline-none transition-colors focus:border-indigo-500/50"
+            className="min-h-[72px] w-full resize-none rounded-lg border border-line-2 bg-ink p-3 text-sm italic leading-relaxed text-zinc-400 outline-none transition-colors focus:border-accent"
           />
         </div>
-      </div>
 
-      <div className="flex gap-2">
-        <input
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submitRefine()}
-          placeholder="Retoucher l'animation : plus dynamique, texte jaune, transition zoom…"
-          disabled={!motionReady}
-          className="flex-1 rounded-xl border border-[#1a1a1a] bg-black px-3 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-700 focus:border-indigo-500/50 disabled:opacity-40"
-        />
-        <button
-          onClick={submitRefine}
-          disabled={!motionReady || refining || !instruction.trim()}
-          className="flex items-center gap-2 rounded-xl border border-[#2a2a2a] bg-[#141414] px-4 text-[10px] font-bold uppercase tracking-widest text-zinc-300 transition-colors hover:border-indigo-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {refining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          Claude
-        </button>
-      </div>
+        <div className="space-y-1.5">
+          <label className="label flex items-center gap-1.5 text-pink/80" htmlFor={`refine-${scene.id}`}>
+            <Sparkles className="h-3 w-3" /> Directeur IA
+          </label>
+          <div className="flex gap-2">
+            <input
+              id={`refine-${scene.id}`}
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitRefine()}
+              placeholder="Plus dynamique, texte jaune, transition zoom…"
+              disabled={!motionReady}
+              className="min-w-0 flex-1 rounded-lg border border-line-2 bg-ink px-3 py-2 text-sm text-cream outline-none placeholder:text-zinc-700 focus:border-pink disabled:opacity-40"
+            />
+            <button
+              onClick={submitRefine}
+              disabled={!motionReady || refining || !instruction.trim()}
+              aria-label="Retoucher l'animation avec Claude"
+              className="flex items-center gap-2 rounded-lg bg-pink px-3 font-mono text-[10px] font-bold uppercase tracking-wider text-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              {refining ? <Loader2 className="h-4 w-4 animate-spin" /> : "Go"}
+            </button>
+          </div>
+        </div>
 
-      {note && <p className={clsx("text-xs", note.error ? "text-red-400" : "text-zinc-500")}>{note.text}</p>}
-    </div>
+        {note && (
+          <p className={clsx("text-xs leading-relaxed", note.error ? "text-red-400" : "text-zinc-500")} role={note.error ? "alert" : "status"}>
+            {note.text}
+          </p>
+        )}
+      </div>
+    </section>
   );
 }

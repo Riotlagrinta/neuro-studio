@@ -1,18 +1,41 @@
 "use server";
 
+// Every exported function here is a public endpoint: anyone can call it directly, not just our UI.
+// So each one checks who is calling (src/lib/access.ts) before spending money or touching data.
+
 import Anthropic from "@anthropic-ai/sdk";
+import { signIn, signOut } from "@/auth";
 import cloudinary from "@/lib/cloudinary";
 import { getAnthropic, MOTION_MODEL } from "@/lib/anthropic-client";
+import { allowedEmail, authConfigured } from "@/lib/allowlist";
+import { authorize, getSessionUser, ownsVideoJob, refund, refundByRef, requireUser, tagEvent } from "@/lib/access";
+import { maxVideoSeconds, motionCost, REFINE_COST, voiceCost } from "@/lib/pricing";
 import { replicate } from "@/lib/replicate-client";
-import { listVoiceProviders, synthesize, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
+import { listVoiceProviders, synthesize, VOICE_COST_PER_1K_CHARS, type VoiceProviderId, type VoiceProviderInfo } from "@/lib/voice-providers";
 import { getVideoModel, VIDEO_MODELS } from "@/lib/video-models";
 import { projectRequest, sceneRequest, STYLES, systemPrompt, type StyleId } from "@/lib/motion/prompt";
 import { extractJson, normalizeProject, normalizeScene } from "@/lib/motion/sanitize";
 import type { AspectRatio, MotionProject, MotionScene } from "@/lib/motion/types";
 
 const RATIOS: AspectRatio[] = ["16:9", "9:16"];
+const MAX_VOICE_CHARS = 1500;
+const MAX_PROJECT_BYTES = 1_500_000;
+const MAX_PROJECTS_PER_USER = 200;
+
 const clean = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const errorMessage = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+export async function signInWithGoogle() {
+  await signIn("google", { redirectTo: "/" });
+}
+
+export async function signOutUser() {
+  await signOut({ redirectTo: "/" });
+}
 
 // ---------------------------------------------------------------------------
 // Motion design (Claude Opus)
@@ -61,16 +84,23 @@ export async function generateMotionProject(input: GenerateInput) {
   if (topic.length < 3) return { success: false as const, error: "SUJET_TROP_COURT" };
   const ratio = RATIOS.includes(input.ratio) ? input.ratio : "16:9";
   const style = STYLES.some((s) => s.id === input.style) ? input.style : "kinetic";
-  const targetSeconds = Math.min(120, Math.max(10, Math.round(Number(input.targetSeconds) || 30)));
+  const targetSeconds = Math.min(maxVideoSeconds(), Math.max(10, Math.round(Number(input.targetSeconds) || 30)));
+
+  const access = await authorize("motion", motionCost(targetSeconds));
+  if (!access.ok) return { success: false as const, error: access.error };
 
   const reply = await askOpus(systemPrompt(ratio, !!input.useMedia), projectRequest({ topic, style, targetSeconds, ratio }));
-  if ("error" in reply) return { success: false as const, error: reply.error };
+  if ("error" in reply) {
+    await refund(access.eventId);
+    return { success: false as const, error: reply.error };
+  }
 
   try {
     const project = normalizeProject(extractJson(reply.text), ratio, false);
-    if (!project) return { success: false as const, error: "RÉPONSE_INVALIDE" };
+    if (!project) throw new Error("empty");
     return { success: true as const, data: clean({ ...project, ratio }) };
   } catch {
+    await refund(access.eventId); // the user gets nothing usable, so nothing is charged
     return { success: false as const, error: "RÉPONSE_INVALIDE" };
   }
 }
@@ -91,6 +121,9 @@ export async function refineMotionScene(input: RefineInput) {
   const ratio = RATIOS.includes(input.ratio) ? input.ratio : "16:9";
   const index = Number.isInteger(input.index) ? input.index : 0;
 
+  const access = await authorize("refine", REFINE_COST);
+  if (!access.ok) return { success: false as const, error: access.error };
+
   const current = normalizeScene(input.scene, index, ratio, true);
   // Generated asset URLs mean nothing to the model; undefined fields are dropped by JSON.stringify.
   const forModel = { ...current, imageUrl: undefined, videoUrl: undefined, audioUrl: undefined };
@@ -106,7 +139,10 @@ export async function refineMotionScene(input: RefineInput) {
       instruction,
     }),
   );
-  if ("error" in reply) return { success: false as const, error: reply.error };
+  if ("error" in reply) {
+    await refund(access.eventId);
+    return { success: false as const, error: reply.error };
+  }
 
   try {
     const revised = normalizeScene(extractJson(reply.text), index, ratio, false);
@@ -122,33 +158,50 @@ export async function refineMotionScene(input: RefineInput) {
     };
     return { success: true as const, data: clean(scene) };
   } catch {
+    await refund(access.eventId);
     return { success: false as const, error: "RÉPONSE_INVALIDE" };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Capabilities
+// Capabilities (public by design: it only says what the UI may offer this visitor)
 // ---------------------------------------------------------------------------
 
 export interface StudioCapabilities {
+  auth: {
+    configured: boolean;
+    user: { name?: string | null; email: string; image?: string | null } | null;
+    /** Signed in and invited: may use the paid features. */
+    allowed: boolean;
+  };
   motion: boolean;
   voices: VoiceProviderInfo[];
   videoAvailable: boolean;
   videoModels: { id: string; label: string; needsImage: boolean }[];
+  maxVideoSeconds: number;
   quota: { remaining: number; total: number } | null;
 }
 
 export async function getStudioCapabilities(): Promise<StudioCapabilities> {
+  const user = await getSessionUser();
+  const allowed = !!user && allowedEmail(user.email);
   return {
+    auth: {
+      configured: authConfigured(),
+      user: user ? { name: user.name, email: user.email, image: user.image } : null,
+      allowed,
+    },
     motion: !!process.env.ANTHROPIC_API_KEY?.trim(),
-    voices: await listVoiceProviders(),
+    // Third-party lookups (voice list, quota) only for people allowed to use them.
+    voices: await listVoiceProviders({ live: allowed }),
     videoAvailable: !!process.env.REPLICATE_API_TOKEN?.trim(),
     videoModels: VIDEO_MODELS.map(({ id, label, needsImage }) => ({ id, label, needsImage })),
-    quota: await getQuota(),
+    maxVideoSeconds: maxVideoSeconds(),
+    quota: allowed ? await elevenLabsQuota() : null,
   };
 }
 
-export async function getQuota() {
+async function elevenLabsQuota() {
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
     if (!apiKey) return null;
@@ -165,27 +218,37 @@ export async function getQuota() {
 // ---------------------------------------------------------------------------
 
 export async function generateImage(prompt: string, ratio: AspectRatio = "16:9") {
+  const text = typeof prompt === "string" ? prompt.trim().slice(0, 150) : "";
+  if (text.length < 3) return { success: false as const, error: "PROMPT_VIDE" };
+
+  const access = await authorize("image", 0); // free provider, but counted: hosting isn't free
+  if (!access.ok) return { success: false as const, error: access.error };
   try {
-    const text = typeof prompt === "string" ? prompt.trim().slice(0, 150) : "";
-    if (text.length < 3) return { success: false as const, error: "PROMPT_VIDE" };
     const [width, height] = ratio === "9:16" ? [720, 1280] : [1280, 720];
     const source = `https://image.pollinations.ai/prompt/${encodeURIComponent(text)}?nologo=true&width=${width}&height=${height}&seed=${Math.floor(Math.random() * 100000)}`;
     // Re-hosted on Cloudinary: a stable URL we control, with CORS headers so the canvas stays exportable.
     const uploaded = await cloudinary.uploader.upload(source, { folder: "neuro-studio-images" });
     return { success: true as const, url: uploaded.secure_url as string };
   } catch {
+    await refund(access.eventId);
     return { success: false as const, error: "ECHEC_IMAGE" };
   }
 }
 
 export async function synthesizeVoice(text: string, provider: VoiceProviderId, voiceId: string) {
+  const input = typeof text === "string" ? text.trim().slice(0, MAX_VOICE_CHARS) : "";
+  if (!input) return { success: false as const, error: "TEXTE_VIDE" };
+  const rate = VOICE_COST_PER_1K_CHARS[provider];
+  if (rate === undefined) return { success: false as const, error: "FOURNISSEUR_INCONNU" };
+
+  const access = await authorize("voice", voiceCost(input.length, rate));
+  if (!access.ok) return { success: false as const, error: access.error };
   try {
-    const input = typeof text === "string" ? text.trim().slice(0, 5000) : "";
-    if (!input) return { success: false as const, error: "TEXTE_VIDE" };
-
     const speech = await synthesize(provider, input, String(voiceId));
-    if (!speech.ok) return { success: false as const, error: speech.error };
-
+    if (!speech.ok) {
+      await refund(access.eventId);
+      return { success: false as const, error: speech.error };
+    }
     const base64 = Buffer.from(speech.audio).toString("base64");
     const uploaded = await cloudinary.uploader.upload(`data:audio/mpeg;base64,${base64}`, {
       resource_type: "video", // Cloudinary stores audio under the "video" resource type
@@ -197,6 +260,7 @@ export async function synthesizeVoice(text: string, provider: VoiceProviderId, v
       duration: typeof uploaded.duration === "number" ? (uploaded.duration as number) : undefined,
     };
   } catch (error) {
+    await refund(access.eventId);
     return { success: false as const, error: errorMessage(error, "ECHEC_AUDIO") };
   }
 }
@@ -222,24 +286,31 @@ export interface VideoJobInput {
 }
 
 export async function startVideoJob(input: VideoJobInput) {
+  if (!process.env.REPLICATE_API_TOKEN?.trim()) return { success: false as const, error: "CLÉ_REPLICATE_MANQUANTE" };
+  const model = getVideoModel(input.modelId);
+  if (!model) return { success: false as const, error: "MODELE_INCONNU" };
+
+  const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 500) : "";
+  if (!prompt) return { success: false as const, error: "PROMPT_VIDE" };
+  // Replicate fetches this URL, so only accept assets we uploaded ourselves.
+  const imageUrl = input.imageUrl && isCloudinaryUrl(input.imageUrl) ? input.imageUrl : undefined;
+  if (model.needsImage && !imageUrl) return { success: false as const, error: "IMAGE_REQUISE" };
+
+  const request = {
+    prompt,
+    imageUrl,
+    ratio: RATIOS.includes(input.ratio) ? input.ratio : ("16:9" as AspectRatio),
+    duration: Math.min(12, Math.max(1, Number(input.duration) || 5)),
+  };
+
+  const access = await authorize("video", model.cost(request));
+  if (!access.ok) return { success: false as const, error: access.error };
   try {
-    if (!process.env.REPLICATE_API_TOKEN?.trim()) return { success: false as const, error: "CLÉ_REPLICATE_MANQUANTE" };
-    const model = getVideoModel(input.modelId);
-    if (!model) return { success: false as const, error: "MODELE_INCONNU" };
-
-    const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 500) : "";
-    if (!prompt) return { success: false as const, error: "PROMPT_VIDE" };
-    // Replicate fetches this URL, so only accept assets we uploaded ourselves.
-    const imageUrl = input.imageUrl && isCloudinaryUrl(input.imageUrl) ? input.imageUrl : undefined;
-    if (model.needsImage && !imageUrl) return { success: false as const, error: "IMAGE_REQUISE" };
-
-    const ratio = RATIOS.includes(input.ratio) ? input.ratio : "16:9";
-    const prediction = await replicate.predictions.create({
-      model: model.slug,
-      input: model.input({ prompt, imageUrl, ratio, duration: Number(input.duration) || 5 }),
-    });
+    const prediction = await replicate.predictions.create({ model: model.slug, input: model.input(request) });
+    await tagEvent(access.eventId, prediction.id); // so only this user can poll (and collect) this job
     return { success: true as const, id: prediction.id };
   } catch (error) {
+    await refund(access.eventId);
     return { success: false as const, error: errorMessage(error, "ECHEC_VIDEO") };
   }
 }
@@ -250,11 +321,16 @@ export type VideoJobStatus =
   | { success: false; error: string };
 
 export async function checkVideoJob(id: string): Promise<VideoJobStatus> {
+  const who = await requireUser();
+  if (!who.ok) return { success: false, error: who.error };
+  if (typeof id !== "string" || !/^[a-z0-9]{8,40}$/i.test(id) || !(await ownsVideoJob(who.user.id, id))) {
+    return { success: false, error: "JOB_INVALIDE" };
+  }
   try {
-    if (!/^[a-z0-9]{8,40}$/i.test(id)) return { success: false, error: "JOB_INVALIDE" };
     const prediction = await replicate.predictions.get(id);
 
     if (prediction.status === "failed" || prediction.status === "canceled") {
+      await refundByRef(who.user.id, id);
       return { success: false, error: typeof prediction.error === "string" && prediction.error ? prediction.error : "VIDEO_ECHEC" };
     }
     if (prediction.status !== "succeeded") return { success: true, status: "processing" };
@@ -271,42 +347,59 @@ export async function checkVideoJob(id: string): Promise<VideoJobStatus> {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence (Neon). The project is stored as-is in the existing `plan` column.
+// Persistence (Neon). Each project belongs to one user and is private to them.
 // ---------------------------------------------------------------------------
 
 export async function saveProject(topic: string, project: MotionProject) {
+  const who = await requireUser();
+  if (!who.ok) return { success: false as const, error: who.error };
   try {
     const plan = normalizeProject(project, project?.ratio ?? "16:9", true);
     if (!plan) return { success: false as const, error: "PROJET_INVALIDE" };
+    const json = JSON.stringify(plan);
+    if (json.length > MAX_PROJECT_BYTES) return { success: false as const, error: "PROJET_TROP_GROS" };
+
     const { sql } = await import("@/lib/db");
+    const count = await sql`SELECT COUNT(*)::int AS n FROM projects WHERE user_id = ${who.user.id}::uuid`;
+    if (Number(count[0].n) >= MAX_PROJECTS_PER_USER) return { success: false as const, error: "TROP_DE_PROJETS" };
+
     const results = await sql`
-      INSERT INTO projects (title, category, plan, topic)
-      VALUES (${plan.title}, ${plan.category}, ${JSON.stringify(plan)}, ${String(topic).slice(0, 1500)})
+      INSERT INTO projects (title, category, plan, topic, user_id)
+      VALUES (${plan.title}, ${plan.category}, ${json}, ${String(topic).slice(0, 1500)}, ${who.user.id}::uuid)
       RETURNING id
     `;
     if (!results || results.length === 0) return { success: false as const, error: "ECHEC_INSERTION_NEON" };
     return { success: true as const, id: Number(results[0].id) };
   } catch (error) {
-    return { success: false as const, error: errorMessage(error, "ECHEC_SAVE") };
+    console.error("saveProject failed:", error);
+    return { success: false as const, error: "SERVICE_INDISPONIBLE" };
   }
 }
 
 export async function getProjects() {
+  const who = await requireUser();
+  if (!who.ok) return { success: false as const, error: who.error };
   try {
     const { sql } = await import("@/lib/db");
-    const results = await sql`SELECT * FROM projects ORDER BY created_at DESC`;
-    return clean(results || []);
+    const rows = await sql`
+      SELECT id, title, category, topic, plan, created_at FROM projects
+      WHERE user_id = ${who.user.id}::uuid ORDER BY created_at DESC LIMIT 100
+    `;
+    return { success: true as const, projects: clean(rows) };
   } catch (error) {
-    console.error("Erreur de récupération des projets :", error);
-    return [];
+    console.error("getProjects failed:", error);
+    return { success: false as const, error: "SERVICE_INDISPONIBLE" };
   }
 }
 
 export async function getProject(id: number) {
+  const who = await requireUser();
+  if (!who.ok) return { success: false as const, error: who.error };
+  if (!Number.isInteger(id)) return { success: false as const, error: "ID_INVALIDE" };
   try {
-    if (!Number.isInteger(id)) return { success: false as const, error: "ID_INVALIDE" };
     const { sql } = await import("@/lib/db");
-    const rows = await sql`SELECT * FROM projects WHERE id = ${id} LIMIT 1`;
+    // Scoped to the owner: someone else's id looks exactly like a missing one.
+    const rows = await sql`SELECT * FROM projects WHERE id = ${id} AND user_id = ${who.user.id}::uuid LIMIT 1`;
     if (!rows || rows.length === 0) return { success: false as const, error: "PROJET_INTROUVABLE" };
     const row = rows[0];
     // Older rows are "biopic" plans without motion layers; normalizeProject gives them a default layout.
@@ -315,6 +408,7 @@ export async function getProject(id: number) {
     if (!project) return { success: false as const, error: "PROJET_INVALIDE" };
     return { success: true as const, data: clean(project), topic: String(row.topic ?? "") };
   } catch (error) {
-    return { success: false as const, error: errorMessage(error, "ECHEC_CHARGEMENT") };
+    console.error("getProject failed:", error);
+    return { success: false as const, error: "SERVICE_INDISPONIBLE" };
   }
 }

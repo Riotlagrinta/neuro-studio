@@ -2,22 +2,24 @@
 
 **NeuroStudio** est un studio de motion design assisté par IA. Vous décrivez une vidéo ; **Claude Opus** la met en scène (titres animés, formes, transitions, narration), des **voix IA** la racontent, et des **modèles vidéo IA** peuvent générer des plans de fond pour chaque scène. Le résultat s'exporte en vidéo.
 
+L'interface est celle d'un outil de motion design : moniteur avec timecode, **timeline** (scènes, voix, médias, calques et keyframes), inspecteur de scène, zones de sécurité, lecture en boucle.
+
 ## Comment ça marche
 
 | Étape | Outil | Détail |
 |---|---|---|
-| Motion design | **Claude Opus 5.5** | Écrit une *spec de motion* JSON : calques (formes, texte, fond IA), keyframes, easings, transitions, narration. |
+| Motion design | **Claude Opus 5.5** (API Anthropic) | Écrit une *spec de motion* JSON : calques (formes, texte, fond IA), keyframes, easings, transitions, narration. |
 | Aperçu & export | Canvas 2D + MediaRecorder | Le même moteur (`src/lib/motion/render.ts`) sert à l'aperçu, au scrub et à l'export WebM. |
 | Voix | **ElevenLabs** ou **OpenAI TTS** | Au choix dans l'interface. La durée de chaque scène s'ajuste sur la narration. |
 | Plans vidéo IA | **Seedance 1 Lite** ou **Wan 2.2 Fast** (Replicate) | Un clic par scène, jamais automatique (ça coûte). |
 | Images de fond | Pollinations → Cloudinary | Gratuit. |
 | Retouche | Claude Opus | « Plus dynamique, texte jaune, transition zoom… » sur une scène à la fois. |
 
-La **démo** (bouton « Voir une démo ») fonctionne sans aucune clé d'API.
+La **démo** (bouton « Voir la démo ») fonctionne sans aucune clé ni compte.
 
 ## Stack
 
-Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Neon (PostgreSQL) · Cloudinary · SDK `@anthropic-ai/sdk` · Replicate
+Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Framer Motion · Neon (PostgreSQL) · Auth.js · Cloudinary · `@anthropic-ai/sdk` · Replicate
 
 ## Installation
 
@@ -26,50 +28,88 @@ npm install
 npm run dev
 ```
 
-Variables d'environnement (`.env.local`) :
+### 1. Variables d'environnement (`.env.local`)
 
 ```env
-# Requis pour la génération par Claude
-ANTHROPIC_API_KEY=...
-
-# Voix (au moins un des deux)
-ELEVENLABS_API_KEY=...
+# --- Génération ---
+ANTHROPIC_API_KEY=...            # requis pour la génération par Claude (clé d'API, voir « Coûts »)
+ELEVENLABS_API_KEY=...           # voix (au moins un des deux)
 OPENAI_API_KEY=...
+REPLICATE_API_TOKEN=...          # plans vidéo IA (optionnel)
 
-# Plans vidéo IA (optionnel)
-REPLICATE_API_TOKEN=...
-
-# Hébergement des médias générés (voix, images, vidéos)
+# --- Médias générés (voix, images, vidéos) ---
 CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
 
-# Sauvegarde des projets
-DATABASE_URL=postgres://...   # Neon
+# --- Base de données ---
+DATABASE_URL=postgres://...      # Neon
+
+# --- Comptes (obligatoires pour générer) ---
+AUTH_SECRET=...                  # openssl rand -base64 32
+AUTH_GOOGLE_ID=...               # voir « Connexion Google »
+AUTH_GOOGLE_SECRET=...
+AUTH_TRUST_HOST=true             # hors Vercel uniquement
+ALLOWED_EMAILS=moi@exemple.com,collegue@exemple.com   # qui a le droit de générer (voir « Accès »)
+
+# --- Limites (optionnel) ---
+MAX_VIDEO_SECONDS=60             # durée max d'une vidéo (10–120)
+DAILY_COST_CAP_USD=3             # dépense max estimée par utilisateur sur 24 h
 ```
 
-Chaque fonctionnalité est désactivée proprement si sa clé manque (l'interface l'indique). La table `projects` attend les colonnes `id`, `title`, `category`, `plan`, `topic`, `created_at` ; le projet entier est stocké dans `plan`. Les anciens projets « biopic » restent lisibles.
+Chaque fonctionnalité est désactivée proprement si sa clé manque (l'interface l'indique).
+
+### 2. Base de données
+
+Collez le contenu de [`db/schema.sql`](db/schema.sql) dans l'éditeur SQL de la console Neon. Il est **idempotent** (on peut le rejouer) et il ajoute à votre table `projects` existante la colonne `user_id`, plus les tables `users` et `usage_events`.
+
+> Les projets créés **avant** les comptes n'ont pas de propriétaire : **personne ne les voit** tant qu'on ne les attribue pas. Pour vous les attribuer (après vous être connecté une première fois) :
+> ```sql
+> UPDATE projects SET user_id = (SELECT id FROM users WHERE email = 'moi@exemple.com') WHERE user_id IS NULL;
+> ```
+
+### 3. Connexion Google
+
+Console Google Cloud → *API et services* → *Identifiants* → *ID client OAuth* (application Web). Ajoutez l'URI de redirection :
+`https://VOTRE-DOMAINE/api/auth/callback/google` (et `http://localhost:3000/api/auth/callback/google` en local). Reportez l'ID et le secret dans `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`.
+
+## Sécurité et accès
+
+- **Rien de payant ne s'exécute sans compte.** Chaque action serveur vérifie la session avant tout appel à Anthropic, ElevenLabs, OpenAI, Replicate ou Cloudinary (`src/lib/access.ts`). Les fonctions exportées d'un fichier `"use server"` sont des points d'accès publics : elles se protègent donc elles-mêmes.
+- **Accès sur invitation, fermé par défaut.** Sans `ALLOWED_EMAILS`, personne ne peut générer. `OPEN_SIGNUP=true` ouvre l'inscription à tout compte Google vérifié : à ne faire que lorsque la facturation existe. Retirer une adresse prend effet immédiatement, même si la session est encore valide.
+- **Quotas par utilisateur** (fenêtre glissante de 24 h) : 6 générations, 40 retouches, 60 voix, 80 images, 8 plans vidéo, et un plafond de coût estimé (`DAILY_COST_CAP_USD`). L'action est réservée *avant* l'appel au fournisseur et **remboursée** s'il échoue.
+- **Projets privés** : chaque projet appartient à un utilisateur ; celui d'un autre ressemble à un projet inexistant. Un plan vidéo ne peut être relevé que par celui qui l'a lancé.
+- **En cas de doute, on refuse** : si la base est injoignable, aucun appel payant ne part.
+- Auth.js v5 est encore en version **bêta** (version épinglée, `next-auth@5.0.0-beta.32`) et fait désormais partie de Better Auth. Sessions JWT, PKCE activé.
+- Limite connue : deux requêtes strictement simultanées peuvent dépasser un quota d'une unité. Pour les crédits prépayés, le débit devra être atomique.
 
 ## Coûts
 
-Chaque appel passe par vos clés. Ordres de grandeur (tarifs publics à vérifier) :
+L'application utilise l'**API** d'Anthropic (facturation à l'usage). Un abonnement personnel Claude (Pro/Max) ne peut pas servir à alimenter un produit proposé à d'autres : Anthropic n'autorise pas les développeurs tiers à proposer une connexion claude.ai ou ses limites dans leurs produits. Ordres de grandeur (tarifs publics à vérifier) :
 
-- **Claude Opus 5.5** : 4 $ / 20 $ par million de tokens (entrée / sortie). La génération d'un projet utilise l'effort `high` ; pour réduire la facture, baissez l'effort (`output_config` dans `src/app/actions.ts`) ou changez le modèle (`MOTION_MODEL` dans `src/lib/anthropic-client.ts`).
-- **Seedance 1 Lite** : 0,018 $/s en 480p, 0,036 $/s en 720p (le réglage actuel, voir `src/lib/video-models.ts`).
-- **Wan 2.2 Fast** : de 0,05 $ à 0,11 $ par clip selon la résolution.
+| Poste | 1 min | 2 min |
+|---|---|---|
+| Claude Opus 5.5 (4 $ / 20 $ par million de tokens)¹ | ≈ 0,2 – 0,5 $ | ≈ 0,4 – 0,9 $ |
+| Voix ElevenLabs (0,08 $ / 1 000 caractères) | ≈ 0,08 $ | ≈ 0,16 $ |
+| Plans vidéo Seedance 720p (0,036 $/s), toutes les scènes | ≈ 2,16 $ | ≈ 4,32 $ |
+| Plans vidéo Wan 720p (0,11 $ / clip), toutes les scènes | ≈ 1,32 $ | ≈ 2,64 $ |
 
-> ⚠️ L'application n'a **pas d'authentification** : une fois déployée publiquement, n'importe qui peut consommer vos crédits. Protégez-la avant de la partager.
+¹ Estimation (~180 tokens de spec par seconde de vidéo, plus la réflexion). La vidéo IA représente environ 85 à 90 % de la facture.
 
-## Limites connues
+Pour réduire la facture : effort d'Opus (`output_config` dans `src/app/actions.ts`), modèle (`MOTION_MODEL` dans `src/lib/anthropic-client.ts`), résolution vidéo (`src/lib/video-models.ts`). Les estimations servant aux plafonds sont dans `src/lib/pricing.ts`.
 
+## Limites connues et prochaines étapes
+
+- **Pas encore de paiement.** Prévu : crédits prépayés (mobile money), débit atomique avant chaque action, remboursement en cas d'échec. `usage_events` est la base de ce journal.
+- **Vidéos de plus de 60 s** : non supportées proprement (12 scènes max, `max_tokens` partagé avec la réflexion, 300 s par action serveur). Il faudra générer en deux temps (plan puis scènes).
 - **L'export est enregistré en temps réel** (une vidéo de 30 s prend 30 s) et au format **WebM** ; l'onglet doit rester visible pendant l'export.
 - Les médias doivent être servis avec des en-têtes CORS pour que le canvas reste exportable : c'est le cas de Cloudinary, qui héberge toutes les ressources générées.
 - La sortie de Claude est validée et bornée avant d'être jouée (`src/lib/motion/sanitize.ts`) : types de calques, couleurs, nombre de scènes/calques, URLs.
 
 ## Ajouter un fournisseur
 
-- **Voix** : une entrée dans `src/lib/voice-providers.ts`.
-- **Modèle vidéo** : une entrée dans `src/lib/video-models.ts` (le schéma d'entrée du modèle Replicate doit être respecté).
+- **Voix** : une entrée dans `src/lib/voice-providers.ts` (avec son tarif estimé).
+- **Modèle vidéo** : une entrée dans `src/lib/video-models.ts` (le schéma d'entrée du modèle Replicate doit être respecté, avec son coût estimé).
 
 ## 📜 Licence
 

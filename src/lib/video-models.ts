@@ -19,7 +19,11 @@ export interface VideoModel {
   /** Image-to-video only: a scene image must exist first. */
   needsImage: boolean;
   input(req: VideoRequest): Record<string, unknown>;
+  /** Estimated USD for one request (see pricing.ts). */
+  cost(req: VideoRequest): number;
 }
+
+const seedanceSeconds = (duration: number) => Math.min(12, Math.max(4, Math.round(duration)));
 
 export const VIDEO_MODELS: VideoModel[] = [
   {
@@ -30,10 +34,11 @@ export const VIDEO_MODELS: VideoModel[] = [
     // 4–12 s, 720p. aspect_ratio is ignored by the model when an image is given.
     input: ({ prompt, imageUrl, ratio, duration }) => ({
       prompt,
-      duration: Math.min(12, Math.max(4, Math.round(duration))),
+      duration: seedanceSeconds(duration),
       resolution: "720p",
       ...(imageUrl ? { image: imageUrl } : { aspect_ratio: ratio }),
     }),
+    cost: ({ duration }) => seedanceSeconds(duration) * 0.036, // 720p: $0.036 per output second
   },
   {
     id: "wan-fast",
@@ -42,6 +47,7 @@ export const VIDEO_MODELS: VideoModel[] = [
     needsImage: true,
     // Fixed ~5 s clip; the output keeps the input image's orientation.
     input: ({ prompt, imageUrl }) => ({ prompt, image: imageUrl, resolution: "720p" }),
+    cost: () => 0.11, // 720p: $0.11 per output video
   },
 ];
 

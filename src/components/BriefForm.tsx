@@ -1,14 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import { Monitor, Play, Smartphone, Wand2 } from "lucide-react";
+import { Monitor, Smartphone, Wand2 } from "lucide-react";
 import clsx from "clsx";
-import type { GenerateInput } from "@/app/actions";
+import { signInWithGoogle, type GenerateInput } from "@/app/actions";
 import { STYLES, type StyleId } from "@/lib/motion/prompt";
 import type { AspectRatio } from "@/lib/motion/types";
 
+export interface Gate {
+  canCreate: boolean;
+  /** Why creating is unavailable (shown under the buttons). */
+  message: string | null;
+  /** Offer the sign-in button. */
+  showSignIn: boolean;
+}
+
 interface Props {
-  motionReady: boolean;
+  gate: Gate;
+  maxSeconds: number;
   onGenerate: (input: GenerateInput) => void;
   onDemo: (ratio: AspectRatio) => void;
 }
@@ -17,92 +26,103 @@ const DURATIONS = [15, 30, 45, 60];
 
 const chip = (active: boolean) =>
   clsx(
-    "rounded-lg border px-3 py-2 text-[11px] font-bold uppercase tracking-widest transition-all",
-    active ? "border-indigo-500 bg-indigo-600 text-white" : "border-[#222] bg-[#0a0a0a] text-zinc-500 hover:border-[#444] hover:text-zinc-300",
+    "rounded-md border px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider transition-all",
+    active ? "border-accent bg-accent/20 text-cream" : "border-line-2 bg-panel-2 text-zinc-500 hover:border-zinc-500 hover:text-zinc-200",
   );
 
-export default function BriefForm({ motionReady, onGenerate, onDemo }: Props) {
+function Setting({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid items-start gap-2 sm:grid-cols-[88px_1fr]">
+      <span className="label pt-2">{label}</span>
+      <div className="flex flex-wrap gap-2">{children}</div>
+    </div>
+  );
+}
+
+export default function BriefForm({ gate, maxSeconds, onGenerate, onDemo }: Props) {
   const [topic, setTopic] = useState("");
   const [style, setStyle] = useState<StyleId>("kinetic");
   const [targetSeconds, setTargetSeconds] = useState(30);
   const [ratio, setRatio] = useState<AspectRatio>("16:9");
   const [useMedia, setUseMedia] = useState(true);
 
-  const canSubmit = motionReady && topic.trim().length >= 3;
-  const submit = () => canSubmit && onGenerate({ topic: topic.trim(), style, targetSeconds, ratio, useMedia });
+  const durations = DURATIONS.filter((d) => d <= maxSeconds);
+  const canSubmit = gate.canCreate && topic.trim().length >= 3;
+  const submit = () => canSubmit && onGenerate({ topic: topic.trim(), style, targetSeconds: Math.min(targetSeconds, maxSeconds), ratio, useMedia });
 
   return (
-    <div className="space-y-12">
-      <div className="max-w-3xl space-y-6">
-        <h1 className="text-5xl font-bold leading-tight tracking-tighter md:text-7xl">
-          Du motion design, <br />
-          <span className="text-zinc-500">dirigé par Claude.</span>
-        </h1>
-        <p className="text-xl leading-relaxed text-zinc-400">
-          Décrivez votre vidéo. Claude Opus anime les titres, les formes et les transitions ; des voix IA la racontent ; des modèles vidéo IA
-          génèrent les plans de fond.
-        </p>
+    <section className="rounded-xl border border-line bg-panel shadow-2xl" aria-label="Nouvelle composition">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
+        <span className="relative inline-block h-2 w-2 rotate-45 bg-amber" />
+        <span className="label">Nouvelle composition</span>
       </div>
 
-      <div className="max-w-3xl space-y-6 rounded-2xl border border-[#1a1a1a] bg-[#0a0a0a] p-5 shadow-2xl">
+      <div className="space-y-5 p-4">
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && submit()}
-          placeholder="Ex. : une pub de 30 s pour une appli de méditation, ton apaisant, couleurs chaudes…"
-          className="min-h-[110px] w-full resize-none bg-transparent px-2 py-2 text-lg outline-none placeholder:text-zinc-700"
+          placeholder="Décrivez la vidéo : une pub de 30 s pour une appli de méditation, ton apaisant, couleurs chaudes…"
+          aria-label="Brief de la vidéo"
+          className="min-h-[104px] w-full resize-none rounded-lg border border-line-2 bg-ink px-4 py-3 text-base leading-relaxed outline-none transition-colors placeholder:text-zinc-700 focus:border-accent"
         />
 
-        <div className="space-y-4 border-t border-[#1a1a1a] pt-5">
-          <div className="flex flex-wrap gap-2">
+        <div className="space-y-3">
+          <Setting label="Style">
             {STYLES.map((s) => (
-              <button key={s.id} onClick={() => setStyle(s.id)} className={chip(style === s.id)}>
+              <button key={s.id} onClick={() => setStyle(s.id)} aria-pressed={style === s.id} className={chip(style === s.id)}>
                 {s.label}
               </button>
             ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {DURATIONS.map((d) => (
-              <button key={d} onClick={() => setTargetSeconds(d)} className={chip(targetSeconds === d)}>
+          </Setting>
+          <Setting label="Durée">
+            {durations.map((d) => (
+              <button key={d} onClick={() => setTargetSeconds(d)} aria-pressed={targetSeconds === d} className={chip(targetSeconds === d)}>
                 ~{d} s
               </button>
             ))}
-            <span className="mx-1 h-5 w-px bg-[#222]" />
-            <button onClick={() => setRatio("16:9")} className={clsx(chip(ratio === "16:9"), "flex items-center gap-2")}>
+          </Setting>
+          <Setting label="Format">
+            <button onClick={() => setRatio("16:9")} aria-pressed={ratio === "16:9"} className={clsx(chip(ratio === "16:9"), "flex items-center gap-2")}>
               <Monitor className="h-3 w-3" /> 16:9
             </button>
-            <button onClick={() => setRatio("9:16")} className={clsx(chip(ratio === "9:16"), "flex items-center gap-2")}>
+            <button onClick={() => setRatio("9:16")} aria-pressed={ratio === "9:16"} className={clsx(chip(ratio === "9:16"), "flex items-center gap-2")}>
               <Smartphone className="h-3 w-3" /> 9:16
             </button>
-          </div>
-          <label className="flex cursor-pointer items-center gap-3 text-sm text-zinc-400">
-            <input type="checkbox" checked={useMedia} onChange={(e) => setUseMedia(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
-            Prévoir des fonds IA (image ou plan vidéo générés scène par scène)
-          </label>
+          </Setting>
+          <Setting label="Fonds IA">
+            <label className="flex cursor-pointer items-center gap-3 pt-1.5 text-sm text-zinc-400">
+              <input type="checkbox" checked={useMedia} onChange={(e) => setUseMedia(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
+              Prévoir des images ou plans vidéo générés par scène
+            </label>
+          </Setting>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
           <button
             onClick={submit}
             disabled={!canSubmit}
-            className="flex items-center gap-2 rounded-xl bg-white px-8 py-4 font-bold text-black transition-all hover:bg-indigo-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex items-center gap-2 rounded-lg bg-cream px-6 py-3 font-bold text-ink transition-all hover:bg-pink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-cream"
           >
-            <Wand2 className="h-5 w-5" /> Créer l&apos;animation
+            <Wand2 className="h-4 w-4" /> Créer l&apos;animation
           </button>
           <button
             onClick={() => onDemo(ratio)}
-            className="flex items-center gap-2 rounded-xl border border-[#2a2a2a] px-6 py-4 text-sm font-bold text-zinc-300 transition-all hover:border-indigo-500 hover:text-white"
+            className="rounded-lg border border-line-2 px-5 py-3 text-sm font-semibold text-zinc-300 transition-colors hover:border-pink hover:text-white"
           >
-            <Play className="h-4 w-4" /> Voir une démo
+            Voir la démo
           </button>
+          {gate.showSignIn && (
+            <form action={signInWithGoogle} className="ml-auto">
+              <button className="rounded-lg border border-accent/50 bg-accent/10 px-4 py-3 text-sm font-semibold text-indigo-300 transition-colors hover:bg-accent hover:text-white">
+                Se connecter avec Google
+              </button>
+            </form>
+          )}
         </div>
 
-        {!motionReady && (
-          <p className="text-sm text-amber-400/90">
-            ANTHROPIC_API_KEY n&apos;est pas configurée : la génération par Claude est désactivée. La démo fonctionne sans clé.
-          </p>
-        )}
+        {gate.message && <p className="text-sm text-amber/90">{gate.message}</p>}
       </div>
-    </div>
+    </section>
   );
 }

@@ -1,17 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getProjects } from "../actions";
-import { 
-  Sparkles, 
-  ChevronLeft, 
-  History, 
-  Calendar, 
-  Loader2,
-  Github
-} from "lucide-react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { ChevronLeft, Loader2 } from "lucide-react";
+import { getProjects, getStudioCapabilities, signInWithGoogle, type StudioCapabilities } from "../actions";
+import AccountMenu from "@/components/AccountMenu";
+import { SweepRuler } from "@/components/Hero";
+import { explain } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -27,86 +23,118 @@ interface Project {
   created_at: string;
 }
 
+const CLIP_COLORS = ["#6366f1", "#f472b6", "#fbbf24", "#34d399", "#38bdf8", "#a78bfa"];
+
+/** The project's scenes as proportional coloured clips: its timeline at a glance. */
+function Strip({ durations }: { durations: number[] }) {
+  const total = durations.reduce((a, b) => a + b, 0) || 1;
+  return (
+    <div className="flex h-7 gap-0.5 overflow-hidden rounded-md" aria-hidden>
+      {durations.map((d, i) => {
+        const color = CLIP_COLORS[i % CLIP_COLORS.length];
+        return <div key={i} className="rounded-sm" style={{ width: `${(d / total) * 100}%`, background: `${color}40`, border: `1px solid ${color}aa` }} />;
+      })}
+    </div>
+  );
+}
+
 export default function ArchivesPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [caps, setCaps] = useState<StudioCapabilities | null>(null);
 
   useEffect(() => {
+    getStudioCapabilities().then(setCaps);
     getProjects()
-      .then((data) => setProjects(data as Project[]))
+      .then((result) => {
+        if (result.success) setProjects(result.projects as Project[]);
+        else setErrorCode(result.error);
+      })
       .finally(() => setLoading(false));
   }, []);
 
   return (
-    <div className="min-h-screen bg-black text-white selection:bg-indigo-500/30">
-      <header className="h-16 border-b border-[#1a1a1a] bg-black/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-8">
-        <Link href="/" className="flex items-center gap-3">
-          <ChevronLeft className="w-5 h-5 text-zinc-500" />
-          <span className="font-bold uppercase text-xs tracking-widest text-zinc-400">Retour au Studio</span>
+    <div className="min-h-screen bg-ink text-cream selection:bg-pink/30">
+      <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-line bg-ink/85 px-5 backdrop-blur-md md:px-8">
+        <Link href="/" className="flex items-center gap-2 text-zinc-400 transition-colors hover:text-white">
+          <ChevronLeft className="h-5 w-5" />
+          <span className="label text-inherit">Retour au studio</span>
         </Link>
-        <div className="flex items-center gap-3">
-          <History className="w-5 h-5 text-indigo-500" />
-          <span className="font-bold tracking-tight uppercase text-sm tracking-widest text-white">Archives de Production</span>
-        </div>
-        <a href="https://github.com/Riotlagrinta" target="_blank" className="text-zinc-500 hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+        <AccountMenu auth={caps?.auth} />
       </header>
+      <SweepRuler />
 
-      <main className="max-w-5xl mx-auto px-6 py-20">
-        <div className="mb-16 space-y-4">
-          <h1 className="text-5xl font-bold tracking-tighter">Votre Bibliothèque.</h1>
-          <p className="text-zinc-500 text-xl max-w-xl">Retrouvez vos animations, avec leurs voix et leurs plans générés.</p>
-        </div>
+      <main className="grid-rules">
+        <div className="mx-auto max-w-5xl px-6 py-14">
+          <div className="mb-12 space-y-3">
+            <p className="label flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rotate-45 bg-amber" /> Archives
+            </p>
+            <h1 className="font-display text-6xl uppercase leading-none tracking-tight md:text-7xl">Vos compositions</h1>
+            <p className="max-w-xl text-lg text-zinc-500">Chaque projet garde ses scènes, ses voix et ses plans générés. Ils ne sont visibles que de vous.</p>
+          </div>
 
-        {loading ? (
-          <div className="h-[40vh] flex items-center justify-center">
-            <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-          </div>
-        ) : projects.length === 0 ? (
-          <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-2xl p-20 text-center space-y-6">
-            <Sparkles className="w-12 h-12 text-zinc-800 mx-auto" />
-            <p className="text-zinc-500 font-bold uppercase tracking-widest text-sm">Aucun projet trouvé</p>
-            <Link href="/" className="inline-block bg-white text-black px-8 py-3 rounded-xl font-bold hover:bg-indigo-500 hover:text-white transition-all">
-              Créer votre premier projet
-            </Link>
-          </div>
-        ) : (
-          <div className="grid gap-6">
-            {projects.map((project, i) => (
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-                key={project.id} 
-                className="bg-[#0a0a0a] border border-[#1a1a1a] p-8 rounded-2xl group hover:border-indigo-500/50 transition-all flex flex-col md:flex-row justify-between items-center gap-8"
-              >
-                <div className="space-y-3 text-center md:text-left">
-                  <div className="flex items-center gap-3 justify-center md:justify-start">
-                    <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest px-2 py-0.5 bg-indigo-500/10 rounded border border-indigo-500/20">
-                      {project.category || "General"}
-                    </span>
-                    <div className="flex items-center gap-1.5 text-zinc-600">
-                      <Calendar className="w-3 h-3" />
-                      <span className="text-[10px] font-bold uppercase tracking-widest">{new Date(project.created_at).toLocaleDateString()}</span>
+          {loading ? (
+            <div className="flex h-[30vh] items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-pink" />
+            </div>
+          ) : errorCode === "NON_CONNECTÉ" ? (
+            <div className="space-y-5 rounded-xl border border-line bg-panel p-12 text-center">
+              <p className="font-semibold">Connectez-vous pour retrouver vos projets.</p>
+              {caps?.auth.configured && (
+                <form action={signInWithGoogle}>
+                  <button className="rounded-lg bg-cream px-6 py-3 font-bold text-ink transition-colors hover:bg-pink">Se connecter avec Google</button>
+                </form>
+              )}
+            </div>
+          ) : errorCode ? (
+            <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-300">
+              {explain(errorCode)}
+            </div>
+          ) : projects.length === 0 ? (
+            <div className="space-y-5 rounded-xl border border-line bg-panel p-12 text-center">
+              <p className="label">Aucun projet pour l&apos;instant</p>
+              <Link href="/" className="inline-block rounded-lg bg-cream px-6 py-3 font-bold text-ink transition-colors hover:bg-pink">
+                Créer votre première composition
+              </Link>
+            </div>
+          ) : (
+            <div className="grid gap-4">
+              {projects.map((project, i) => {
+                const durations = (project.plan?.scenes ?? []).map((s) => s.duration ?? 0);
+                const seconds = durations.reduce((a, b) => a + b, 0);
+                return (
+                  <motion.article
+                    key={project.id}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.05, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                    className="group grid gap-5 rounded-xl border border-line bg-panel p-5 transition-colors hover:border-accent/60 md:grid-cols-[1fr_auto] md:items-center"
+                  >
+                    <div className="min-w-0 space-y-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="label rounded bg-accent/15 px-2 py-1 text-indigo-300">{project.category || "Motion"}</span>
+                        <span className="font-mono text-[11px] text-zinc-500">
+                          {durations.length} scènes · {seconds.toFixed(0)} s · {project.plan?.ratio ?? "16:9"} · {new Date(project.created_at).toLocaleDateString("fr-FR")}
+                        </span>
+                      </div>
+                      <h2 className="truncate text-2xl font-semibold transition-colors group-hover:text-pink">{project.title}</h2>
+                      <Strip durations={durations} />
+                      {project.topic && <p className="truncate text-sm italic text-zinc-600">{project.topic}</p>}
                     </div>
-                  </div>
-                  <h3 className="text-2xl font-bold text-white group-hover:text-indigo-400 transition-colors">{project.title}</h3>
-                  <p className="text-zinc-500 text-sm italic">Sujet: {project.topic || "N/A"}</p>
-                  <p className="text-zinc-600 text-[10px] font-bold uppercase tracking-widest">
-                    {project.plan?.scenes?.length ?? 0} scènes · {(project.plan?.scenes ?? []).reduce((sum, sc) => sum + (sc.duration ?? 0), 0).toFixed(0)} s · {project.plan?.ratio ?? "16:9"}
-                  </p>
-                </div>
-                <div className="flex gap-3">
-                   <Link
-                    href={`/?project=${project.id}`}
-                    className="flex items-center gap-2 px-5 py-3 bg-[#1a1a1a] hover:bg-[#2a2a2a] rounded-xl border border-[#333] transition-all text-[10px] font-bold uppercase tracking-widest"
-                   >
-                     Rouvrir
-                   </Link>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        )}
+                    <Link
+                      href={`/?project=${project.id}`}
+                      className="rounded-lg border border-line-2 px-5 py-3 text-center font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors hover:border-pink hover:text-white"
+                    >
+                      Rouvrir
+                    </Link>
+                  </motion.article>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );

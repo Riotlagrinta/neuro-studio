@@ -1,54 +1,111 @@
 @import "tailwindcss";
 
+/* Design tokens — a motion designer's workspace: near-black ink, panel greys, and three signal colours
+   borrowed from the demo reel (indigo, pink playhead, amber keyframes). */
 @theme {
-  --color-background: #000000;
-  --color-foreground: #ffffff;
-  --color-card: #0a0a0a;
-  --color-border: #1a1a1a;
+  --color-ink: #07070d;
+  --color-panel: #0d0d16;
+  --color-panel-2: #12121d;
+  --color-line: #1c1c2b;
+  --color-line-2: #2a2a3d;
+  --color-cream: #f5f3ff;
   --color-accent: #6366f1;
+  --color-pink: #f472b6;
+  --color-amber: #fbbf24;
+  --color-mint: #34d399;
+  --color-sky: #38bdf8;
+
+}
+
+/* Fonts: next/font defines --font-geist-sans etc. on <body>, not :root. `inline` makes each utility read
+   the variable where it is used (a plain @theme would resolve it at :root, where it doesn't exist). */
+@theme inline {
+  --font-sans: var(--font-geist-sans), system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-display: var(--font-anton), Impact, "Arial Narrow Bold", sans-serif;
 }
 
 :root {
-  --background: #000000;
-  --foreground: #ffffff;
+  --background: #07070d;
+  --foreground: #f5f3ff;
 }
 
 body {
   background-color: var(--background);
   color: var(--foreground);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, "Helvetica Neue", Arial, sans-serif;
   margin: 0;
 }
 
 @layer components {
-  .studio-card {
-    background-color: #0a0a0a;
-    border: 1px solid #1a1a1a;
-    border-radius: 1rem;
-    transition: all 0.3s ease;
+  /* Faint vertical rules, like the grid behind a timeline. */
+  .grid-rules {
+    background-image: linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    background-size: 96px 100%;
   }
 
-  .studio-card:hover {
-    border-color: #333;
-    transform: translateY(-2px);
+  /* Ruler ticks: a long tick every 5 units, a short one every unit. */
+  .ruler-ticks {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.22) 1px, transparent 1px),
+      linear-gradient(to right, rgba(255, 255, 255, 0.09) 1px, transparent 1px);
+    background-size: 80px 100%, 16px 45%;
+    background-position: 0 100%, 0 100%;
+    background-repeat: repeat-x;
   }
 
-  .glass {
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+  /* Pulls the eye to a diamond keyframe. */
+  .keyframe {
+    width: 9px;
+    height: 9px;
+    /* Individual properties, so animating `transform` (e.g. scale) doesn't wipe the rotation. */
+    translate: -50% -50%;
+    rotate: 45deg;
+    background: var(--color-amber);
+    border: 1px solid rgba(0, 0, 0, 0.55);
+    position: absolute;
+    top: 50%;
+  }
+
+  .label {
+    font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #71717a;
+  }
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--sweep, 100%));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #000;
+  background: #07070d;
 }
 ::-webkit-scrollbar-thumb {
-  background: #222;
+  background: #23233a;
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {

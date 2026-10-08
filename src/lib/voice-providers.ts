@@ -22,6 +22,9 @@ const ELEVEN_VOICE_ID = /^[A-Za-z0-9]{10,40}$/;
 const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
 const OPENAI_MODEL = "gpt-4o-mini-tts";
 
+/** Estimated USD per 1,000 characters (see pricing.ts). OpenAI bills audio tokens: ~0.015$/min, rounded up. */
+export const VOICE_COST_PER_1K_CHARS: Record<VoiceProviderId, number> = { elevenlabs: 0.08, openai: 0.02 };
+
 const key = (name: string) => process.env[name]?.trim() || undefined;
 
 async function elevenLabsVoices(): Promise<VoiceOption[]> {
@@ -38,9 +41,9 @@ async function elevenLabsVoices(): Promise<VoiceOption[]> {
   }
 }
 
-export async function listVoiceProviders(): Promise<VoiceProviderInfo[]> {
+export async function listVoiceProviders(opts: { live: boolean }): Promise<VoiceProviderInfo[]> {
   return [
-    { id: "elevenlabs", label: "ElevenLabs", available: !!key("ELEVENLABS_API_KEY"), voices: await elevenLabsVoices() },
+    { id: "elevenlabs", label: "ElevenLabs", available: !!key("ELEVENLABS_API_KEY"), voices: opts.live ? await elevenLabsVoices() : ELEVEN_DEFAULT_VOICES },
     { id: "openai", label: "OpenAI", available: !!key("OPENAI_API_KEY"), voices: OPENAI_VOICES.map((id) => ({ id, label: id[0].toUpperCase() + id.slice(1) })) },
   ];
 }
