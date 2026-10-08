@@ -1,374 +1,487 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { 
-  Loader2, 
-  Play, 
-  Sparkles, 
-  Wand2, 
-  Save,
-  Github,
-  Image as ImageIcon,
-  CheckCircle2,
-  FileDown,
-  Mic2,
-  MessageSquareText,
-  Clapperboard,
-  History,
-  Edit3,
-  RefreshCw,
-  Download,
-  Music,
-  Smartphone,
-  Monitor
-} from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useRef, useState } from "react";
+import { CheckCircle2, FileDown, History, Loader2, Save, Sparkles, Video } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
-import { generateContent, ContentPlan, Scene, saveProject, getElevenLabsAudio, getQuota, generateVideo, generateImage } from "./actions";
+import {
+  checkVideoJob,
+  generateImage,
+  generateMotionProject,
+  getProject,
+  getStudioCapabilities,
+  refineMotionScene,
+  saveProject,
+  startVideoJob,
+  synthesizeVoice,
+  type GenerateInput,
+  type StudioCapabilities,
+} from "./actions";
+import BriefForm from "@/components/BriefForm";
+import MotionPlayer, { type MotionPlayerHandle } from "@/components/MotionPlayer";
+import SceneCard, { type BusyKind } from "@/components/SceneCard";
+import { explain } from "@/lib/errors";
+import { exportProjectToWebm } from "@/lib/motion/export";
+import { buildSampleProject } from "@/lib/motion/sample";
+import { ensureMediaLayer } from "@/lib/motion/sanitize";
+import { projectDuration, type AspectRatio, type MotionProject, type MotionScene } from "@/lib/motion/types";
+import { exportScriptPdf } from "@/lib/script-pdf";
+import type { VoiceProviderId } from "@/lib/voice-providers";
 
-export const dynamic = "force-dynamic";
+const STAGES = [
+  "Claude Opus lit votre brief…",
+  "Écriture de la narration…",
+  "Mise en scène : calques et keyframes…",
+  "Réglage des easings et des transitions…",
+  "Dernières vérifications…",
+];
 
-type AspectRatio = "16:9" | "9:16";
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Narration length + a short tail, so the picture doesn't cut the voice. */
+const fitDuration = (audioSeconds: number) => Math.round((audioSeconds + 0.6) * 10) / 10;
+
+function audioDuration(url: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : undefined);
+    audio.onerror = () => resolve(undefined);
+    audio.src = url;
+  });
+}
+
+function download(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+type Note = { text: string; error: boolean };
+
+const select =
+  "w-full rounded-lg border border-[#222] bg-black px-3 py-2 text-sm text-zinc-200 outline-none focus:border-indigo-500/50 disabled:opacity-40";
 
 export default function Home() {
+  const [project, setProject] = useState<MotionProject | null>(null);
   const [topic, setTopic] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-  const [plan, setPlan] = useState<ContentPlan | null>(null);
+  const [caps, setCaps] = useState<StudioCapabilities | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [stage, setStage] = useState(0);
   const [error, setError] = useState("");
-  const [quota, setQuota] = useState<{remaining: number, total: number} | null>(null);
-  const [globalRatio, setGlobalRatio] = useState<AspectRatio>("16:9");
+  const [busy, setBusy] = useState<Record<number, BusyKind | undefined>>({});
+  const [notes, setNotes] = useState<Record<number, Note | undefined>>({});
+  const [bulk, setBulk] = useState<"voice" | "image" | null>(null);
+  const [voice, setVoice] = useState<{ provider: VoiceProviderId; voiceId: string }>({ provider: "elevenlabs", voiceId: "" });
+  const [videoModelId, setVideoModelId] = useState("seedance");
+  const [activeScene, setActiveScene] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [exportPct, setExportPct] = useState<number | null>(null);
+
+  const playerRef = useRef<MotionPlayerHandle>(null);
+  const alive = useRef(true);
 
   useEffect(() => {
-    getQuota().then(setQuota);
+    alive.current = true;
+    getStudioCapabilities().then((c) => {
+      if (!alive.current) return;
+      setCaps(c);
+      const provider = c.voices.find((v) => v.available) ?? c.voices[0];
+      if (provider) setVoice({ provider: provider.id, voiceId: provider.voices[0]?.id ?? "" });
+      if (c.videoModels[0]) setVideoModelId(c.videoModels[0].id);
+    });
+
+    // Reopen a project from the archives: /?project=ID
+    const id = Number(new URLSearchParams(window.location.search).get("project"));
+    if (Number.isInteger(id) && id > 0) {
+      getProject(id).then((r) => {
+        if (!alive.current) return;
+        if (r.success) {
+          setProject(r.data);
+          setTopic(r.topic);
+        } else {
+          setError(explain(r.error));
+        }
+      });
+    }
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
-  const handleGenerate = async () => {
-    if (!topic.trim()) return;
-    setIsGenerating(true);
+  useEffect(() => {
+    if (!generating) return;
+    const timer = setInterval(() => setStage((s) => Math.min(s + 1, STAGES.length - 1)), 12000);
+    return () => clearInterval(timer);
+  }, [generating]);
+
+  const motionReady = !!caps?.motion;
+  const providerInfo = caps?.voices.find((v) => v.id === voice.provider);
+  const voiceReady = !!providerInfo?.available && !!voice.voiceId;
+  const videoModel = caps?.videoModels.find((m) => m.id === videoModelId);
+
+  // ---- project-level actions ----
+
+  const generate = async (input: GenerateInput) => {
+    setGenerating(true);
+    setStage(0);
     setError("");
-    setPlan(null);
     try {
-      const result = await generateContent(topic);
-      if (result.success && result.data) {
-        setPlan(result.data);
+      const result = await generateMotionProject(input);
+      if (result.success) {
+        setProject(result.data);
+        setTopic(input.topic);
+        setActiveScene(0);
       } else {
-        setError(result.error || "AI_ERROR");
+        setError(explain(result.error));
       }
     } catch {
-      setError("SERVER_CONNECTION_ERROR");
+      setError("Connexion au serveur interrompue. Réessayez.");
     } finally {
-      setIsGenerating(false);
+      setGenerating(false);
     }
+  };
+
+  const openDemo = (ratio: AspectRatio) => {
+    setError("");
+    setTopic("Démo");
+    setProject(buildSampleProject(ratio));
+    setActiveScene(0);
+  };
+
+  const closeProject = () => {
+    setProject(null);
+    setBusy({});
+    setNotes({});
+    setSaved(false);
+  };
+
+  const patchScene = (index: number, update: (scene: MotionScene) => MotionScene) => {
+    setSaved(false);
+    setProject((p) => (p ? { ...p, scenes: p.scenes.map((s, i) => (i === index ? update(s) : s)) } : p));
   };
 
   const handleSave = async () => {
-    if (!plan || !topic) return;
-    setIsSaving(true);
+    if (!project) return;
+    setSaving(true);
     try {
-      const result = await saveProject(topic, plan);
+      const result = await saveProject(topic, project);
       if (result.success) {
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
+        setSaved(true);
+        setError("");
       } else {
-        setError(result.error || "SAVE_ERROR");
+        setError(explain(result.error));
       }
     } catch {
-      setError("NETWORK_ERROR");
+      setError("Connexion au serveur interrompue.");
     } finally {
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
-  const updateScene = (index: number, updates: Partial<Scene>) => {
-    if (!plan) return;
-    const newScenes = [...plan.scenes];
-    newScenes[index] = { ...newScenes[index], ...updates };
-    setPlan({ ...plan, scenes: newScenes });
-  };
-
-  const masterExport = async () => {
-    if (!plan) return;
-    setIsExporting(true);
+  const handleExportVideo = async () => {
+    if (!project) return;
+    setError("");
+    setExportPct(0);
     try {
-      const html2pdf = (await import("html2pdf.js")).default;
-      const element = document.createElement("div");
-      element.innerHTML = `
-        <div style="padding: 40px; font-family: sans-serif; background: white; color: black;">
-          <h1 style="font-size: 32px;">${plan.title}</h1>
-          <p style="color: #666; text-transform: uppercase;">${plan.category} • Ratio ${globalRatio}</p>
-          ${plan.scenes.map(s => `
-            <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
-              <p>SCENE ${s.id}</p>
-              <p style="font-size: 18px;">"${s.voiceOver}"</p>
-            </div>
-          `).join("")}
-        </div>
-      `;
-      const opt = { margin: 10, filename: 'neuro-prod.pdf', html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4' } };
-      await html2pdf().from(element).set(opt).save();
+      const blob = await exportProjectToWebm(project, (fraction) => setExportPct(Math.round(fraction * 100)));
+      const name = project.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "neuro-studio";
+      download(blob, `${name}.webm`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Échec de l'export vidéo.");
     } finally {
-      setIsExporting(false);
+      setExportPct(null);
     }
   };
+
+  const handleExportPdf = async () => {
+    if (!project) return;
+    setPdfBusy(true);
+    try {
+      await exportScriptPdf(project);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  // ---- per-scene generation ----
+
+  const runScene = async (index: number, kind: BusyKind, job: () => Promise<{ error?: string }>) => {
+    setBusy((b) => ({ ...b, [index]: kind }));
+    setNotes((n) => ({ ...n, [index]: undefined }));
+    try {
+      const { error: code } = await job();
+      if (alive.current) setNotes((n) => ({ ...n, [index]: code ? { text: explain(code), error: true } : undefined }));
+    } catch {
+      if (alive.current) setNotes((n) => ({ ...n, [index]: { text: "Connexion au serveur interrompue.", error: true } }));
+    } finally {
+      if (alive.current) setBusy((b) => ({ ...b, [index]: undefined }));
+    }
+  };
+
+  const makeVoice = (index: number) => {
+    if (!project) return Promise.resolve();
+    const scene = project.scenes[index];
+    return runScene(index, "voice", async () => {
+      const result = await synthesizeVoice(scene.voiceOver, voice.provider, voice.voiceId);
+      if (!result.success) return { error: result.error };
+      const seconds = result.duration ?? (await audioDuration(result.url));
+      // The narration drives the scene length.
+      patchScene(index, (s) => ({ ...s, audioUrl: result.url, ...(seconds ? { duration: fitDuration(seconds) } : {}) }));
+      return {};
+    });
+  };
+
+  const makeImage = (index: number) => {
+    if (!project) return Promise.resolve();
+    const { ratio } = project;
+    const scene = project.scenes[index];
+    return runScene(index, "image", async () => {
+      const result = await generateImage(scene.visualPrompt, ratio);
+      if (!result.success) return { error: result.error };
+      patchScene(index, (s) => ensureMediaLayer({ ...s, imageUrl: result.url }, ratio));
+      return {};
+    });
+  };
+
+  const makeVideo = (index: number) => {
+    if (!project) return Promise.resolve();
+    const { ratio } = project;
+    const scene = project.scenes[index];
+    return runScene(index, "video", async () => {
+      const start = await startVideoJob({ modelId: videoModelId, prompt: scene.visualPrompt, imageUrl: scene.imageUrl, ratio, duration: scene.duration });
+      if (!start.success) return { error: start.error };
+      setNotes((n) => ({ ...n, [index]: { text: "Plan vidéo en cours de génération (1 à 3 minutes)…", error: false } }));
+      for (let attempt = 0; attempt < 150 && alive.current; attempt++) {
+        await sleep(4000);
+        const status = await checkVideoJob(start.id);
+        if (!status.success) return { error: status.error };
+        if (status.status === "succeeded") {
+          patchScene(index, (s) => ensureMediaLayer({ ...s, videoUrl: status.url }, ratio));
+          return {};
+        }
+      }
+      return { error: "VIDEO_TIMEOUT" };
+    });
+  };
+
+  const refine = (index: number, instruction: string) => {
+    if (!project) return Promise.resolve();
+    const { title, palette, ratio, scenes } = project;
+    return runScene(index, "refine", async () => {
+      const result = await refineMotionScene({ title, palette, ratio, index, total: scenes.length, scene: scenes[index], instruction });
+      if (!result.success) return { error: result.error };
+      patchScene(index, () => result.data);
+      return {};
+    });
+  };
+
+  const generateAll = async (kind: "voice" | "image") => {
+    if (!project) return;
+    setBulk(kind);
+    for (let i = 0; i < project.scenes.length && alive.current; i++) {
+      const scene = project.scenes[i];
+      if (kind === "voice" && !scene.audioUrl && scene.voiceOver.trim()) await makeVoice(i);
+      if (kind === "image" && !scene.imageUrl && scene.visualPrompt.trim()) await makeImage(i);
+    }
+    if (alive.current) setBulk(null);
+  };
+
+  // ---- render ----
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-indigo-500/30">
-      
-      <header className="h-16 border-b border-[#1a1a1a] bg-black/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-8">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setPlan(null)}>
-          <div className="w-8 h-8 bg-indigo-600 rounded flex items-center justify-center shadow-[0_0_15px_-3px_rgba(79,70,229,0.5)]">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <span className="font-bold tracking-tight uppercase text-sm tracking-widest">NeuroStudio</span>
-        </div>
-        <div className="flex items-center gap-6">
-          <div className="flex bg-[#111] rounded-lg p-1 border border-[#222]">
-             <button 
-              onClick={() => setGlobalRatio("16:9")}
-              className={clsx("flex items-center gap-2 px-3 py-1.5 rounded-md transition-all text-[10px] font-bold uppercase tracking-widest", globalRatio === "16:9" ? "bg-indigo-600 text-white shadow-lg" : "text-zinc-500 hover:text-zinc-300")}
-             >
-               <Monitor className="w-3 h-3" /> YouTube
-             </button>
-             <button 
-              onClick={() => setGlobalRatio("9:16")}
-              className={clsx("flex items-center gap-2 px-3 py-1.5 rounded-md transition-all text-[10px] font-bold uppercase tracking-widest", globalRatio === "9:16" ? "bg-indigo-600 text-white shadow-lg" : "text-zinc-500 hover:text-zinc-300")}
-             >
-               <Smartphone className="w-3 h-3" /> TikTok
-             </button>
-          </div>
-          <Link href="/archives" className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors">
-            <History className="w-5 h-5" />
-            <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-widest">Archives</span>
+      <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-[#1a1a1a] bg-black/80 px-6 backdrop-blur-md md:px-8">
+        <button onClick={closeProject} className="flex items-center gap-3" aria-label="Retour à l'accueil">
+          <span className="flex h-8 w-8 items-center justify-center rounded bg-indigo-600 shadow-[0_0_15px_-3px_rgba(79,70,229,0.5)]">
+            <Sparkles className="h-5 w-5 text-white" />
+          </span>
+          <span className="text-sm font-bold uppercase tracking-widest">NeuroStudio</span>
+        </button>
+        <div className="flex items-center gap-5">
+          {project && (
+            <span className="hidden rounded border border-[#222] px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-zinc-500 sm:block">
+              {project.ratio} · {projectDuration(project).toFixed(1)} s
+            </span>
+          )}
+          <Link href="/archives" className="flex items-center gap-2 text-zinc-500 transition-colors hover:text-white">
+            <History className="h-5 w-5" />
+            <span className="hidden text-[10px] font-bold uppercase tracking-widest sm:inline">Archives</span>
           </Link>
-          <div className="h-4 w-px bg-[#1a1a1a]" />
-          <div className="px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
-            Production v5.2
-          </div>
+          <span className="rounded border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-indigo-400">
+            Motion v6
+          </span>
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto px-6 py-20">
-        {!plan && !isGenerating && (
-          <div className="space-y-16">
-            <div className="space-y-6 max-w-3xl">
-              <h1 className="text-5xl md:text-7xl font-bold tracking-tighter leading-tight">
-                Racontez des vies <br />
-                <span className="text-zinc-500">au format {globalRatio === "16:9" ? "cinéma" : "mobile"}.</span>
-              </h1>
-              <p className="text-zinc-400 text-xl leading-relaxed">
-                NeuroStudio adapte vos biopics pour toutes les plateformes. 
-                Éditez vos scènes et téléchargez-les instantanément.
-              </p>
-            </div>
-
-            <div className="max-w-2xl bg-[#0a0a0a] border border-[#1a1a1a] p-2 rounded-2xl flex items-center shadow-2xl">
-              <input
-                type="text"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                placeholder="Le sujet de votre biopic..."
-                className="flex-1 bg-transparent px-6 py-4 outline-none text-lg placeholder:text-zinc-700"
-                onKeyDown={(e) => e.key === "Enter" && handleGenerate()}
-              />
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !topic.trim()}
-                className="bg-white text-black px-8 py-4 rounded-xl font-bold hover:bg-indigo-600 hover:text-white transition-all flex items-center gap-2"
-              >
-                <Wand2 className="w-5 h-5" /> Écrire l'Histoire
-              </button>
-            </div>
+      <main className="mx-auto max-w-7xl px-6 py-14 md:py-20">
+        {error && (
+          <div role="alert" className="mb-8 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {error}
           </div>
         )}
 
-        {isGenerating && (
-          <div className="h-[40vh] flex flex-col justify-center items-center gap-6 text-center">
-             <div className="relative">
-                <Loader2 className="w-16 h-12 text-indigo-500 animate-spin" />
-                <div className="absolute inset-0 blur-xl bg-indigo-500/30 animate-pulse" />
-             </div>
-             <p className="text-zinc-500 font-bold uppercase tracking-widest text-xs animate-pulse">Recherche biographique en cours...</p>
+        {!project && !generating && <BriefForm motionReady={motionReady} onGenerate={generate} onDemo={openDemo} />}
+
+        {generating && (
+          <div className="flex h-[45vh] flex-col items-center justify-center gap-6 text-center">
+            <div className="relative">
+              <Loader2 className="h-14 w-14 animate-spin text-indigo-500" />
+              <div className="absolute inset-0 animate-pulse bg-indigo-500/30 blur-xl" />
+            </div>
+            <p className="animate-pulse text-xs font-bold uppercase tracking-widest text-zinc-400">{STAGES[stage]}</p>
+            <p className="max-w-sm text-sm text-zinc-600">Opus compose toute l&apos;animation : comptez entre 30 secondes et 2 minutes.</p>
           </div>
         )}
 
-        <AnimatePresence>
-          {plan && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-12">
-              <div className="bg-[#0a0a0a] border border-[#1a1a1a] p-8 rounded-2xl flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl">
-                <div className="flex-1">
-                  <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest px-2 py-1 bg-indigo-500/10 rounded tracking-[0.2em]">{plan.category}</span>
-                  <input value={plan.title} onChange={(e) => setPlan({...plan, title: e.target.value})} className="block w-full bg-transparent text-3xl font-bold mt-2 outline-none border-b border-transparent focus:border-indigo-500/30 transition-all" />
-                </div>
-                <div className="flex gap-3">
-                   <button onClick={handleSave} disabled={isSaving} className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] rounded-lg border border-[#333] transition-all text-xs font-bold uppercase tracking-widest">
-                     {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : (saveSuccess ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Save className="w-4 h-4" />)}
-                     {saveSuccess ? "Enregistré" : "Sauvegarder"}
-                   </button>
-                   <button onClick={masterExport} disabled={isExporting} className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-indigo-500 hover:text-white rounded-lg transition-all text-xs font-bold uppercase tracking-widest">
-                     {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
-                     PDF Script
-                   </button>
-                </div>
+        {project && (
+          <div className="space-y-10">
+            <div className="flex flex-col items-start justify-between gap-6 rounded-2xl border border-[#1a1a1a] bg-[#0a0a0a] p-6 shadow-2xl md:flex-row md:items-center">
+              <div className="min-w-0 flex-1">
+                <span className="rounded bg-indigo-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-500">{project.category}</span>
+                <input
+                  value={project.title}
+                  onChange={(e) => {
+                    setSaved(false);
+                    setProject({ ...project, title: e.target.value });
+                  }}
+                  aria-label="Titre du projet"
+                  className="mt-2 block w-full border-b border-transparent bg-transparent text-3xl font-bold outline-none transition-all focus:border-indigo-500/30"
+                />
               </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="flex items-center gap-2 rounded-lg border border-[#333] bg-[#1a1a1a] px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all hover:bg-[#2a2a2a]"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <Save className="h-4 w-4" />}
+                  {saved ? "Enregistré" : "Sauvegarder"}
+                </button>
+                <button
+                  onClick={handleExportPdf}
+                  disabled={pdfBusy}
+                  className="flex items-center gap-2 rounded-lg border border-[#333] bg-[#1a1a1a] px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all hover:bg-[#2a2a2a]"
+                >
+                  {pdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+                  PDF
+                </button>
+                <button
+                  onClick={handleExportVideo}
+                  disabled={exportPct !== null}
+                  className="flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-all hover:bg-indigo-500 hover:text-white disabled:opacity-70"
+                >
+                  {exportPct !== null ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+                  {exportPct !== null ? `Export ${exportPct}%` : "Exporter la vidéo"}
+                </button>
+              </div>
+            </div>
+            {exportPct !== null && (
+              <p className="-mt-6 text-xs text-zinc-500">
+                L&apos;export enregistre la vidéo en temps réel : gardez cet onglet visible jusqu&apos;à la fin.
+              </p>
+            )}
 
-              <div className="grid gap-12">
-                {plan.scenes.map((scene, index) => (
-                  <SceneCard 
-                    key={scene.id} 
-                    scene={scene} 
-                    index={index} 
-                    ratio={globalRatio}
-                    onUpdate={(updates) => updateScene(index, updates)}
+            <div className="grid items-start gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,560px)]">
+              <div className="order-2 space-y-6 lg:order-1">
+                <div className="grid gap-4 rounded-2xl border border-[#1a1a1a] bg-[#0a0a0a] p-5 sm:grid-cols-3">
+                  <label className="space-y-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Fournisseur de voix</span>
+                    <select
+                      value={voice.provider}
+                      onChange={(e) => {
+                        const provider = caps?.voices.find((v) => v.id === e.target.value);
+                        if (provider) setVoice({ provider: provider.id, voiceId: provider.voices[0]?.id ?? "" });
+                      }}
+                      className={select}
+                    >
+                      {caps?.voices.map((v) => (
+                        <option key={v.id} value={v.id} disabled={!v.available}>
+                          {v.label}
+                          {v.available ? "" : " (sans clé)"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Voix</span>
+                    <select value={voice.voiceId} onChange={(e) => setVoice({ ...voice, voiceId: e.target.value })} disabled={!providerInfo?.available} className={select}>
+                      {providerInfo?.voices.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Moteur vidéo IA</span>
+                    <select value={videoModelId} onChange={(e) => setVideoModelId(e.target.value)} disabled={!caps?.videoAvailable} className={select}>
+                      {caps?.videoModels.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold uppercase tracking-widest">
+                  <button
+                    onClick={() => generateAll("voice")}
+                    disabled={!voiceReady || bulk !== null}
+                    className="flex items-center gap-2 rounded-lg border border-[#2a2a2a] bg-[#141414] px-3 py-2 text-zinc-300 transition-colors hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {bulk === "voice" && <Loader2 className="h-3 w-3 animate-spin" />} Toutes les voix
+                  </button>
+                  <button
+                    onClick={() => generateAll("image")}
+                    disabled={bulk !== null}
+                    className="flex items-center gap-2 rounded-lg border border-[#2a2a2a] bg-[#141414] px-3 py-2 text-zinc-300 transition-colors hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {bulk === "image" && <Loader2 className="h-3 w-3 animate-spin" />} Tous les fonds
+                  </button>
+                  {caps?.quota && providerInfo?.id === "elevenlabs" && (
+                    <span className="text-zinc-600">{caps.quota.remaining.toLocaleString("fr-FR")} caractères ElevenLabs restants</span>
+                  )}
+                  {!caps?.videoAvailable && <span className="text-zinc-600">REPLICATE_API_TOKEN manquant : plans vidéo IA désactivés</span>}
+                </div>
+
+                {project.scenes.map((scene, i) => (
+                  <SceneCard
+                    key={scene.id}
+                    scene={scene}
+                    index={i}
+                    active={i === activeScene}
+                    busy={busy[i]}
+                    note={notes[i]}
+                    voiceReady={voiceReady}
+                    videoReady={!!caps?.videoAvailable}
+                    videoBlocked={!!videoModel?.needsImage && !scene.imageUrl}
+                    motionReady={motionReady}
+                    onChange={(patch) => patchScene(i, (s) => ({ ...s, ...patch }))}
+                    onSeek={() => playerRef.current?.seekToScene(i)}
+                    onVoice={() => makeVoice(i)}
+                    onImage={() => makeImage(i)}
+                    onVideo={() => makeVideo(i)}
+                    onRefine={(instruction) => refine(i, instruction)}
                   />
                 ))}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    </div>
-  );
-}
 
-function Feature({ icon: Icon, title }: { icon: React.ElementType, title: string }) {
-  return (
-    <div className="flex items-center gap-4 group">
-      <div className="w-12 h-12 rounded-xl bg-[#0a0a0a] border border-[#1a1a1a] flex items-center justify-center group-hover:border-indigo-500 transition-colors">
-        <Icon className="w-6 h-6 text-zinc-500 group-hover:text-indigo-500 transition-colors" />
-      </div>
-      <span className="text-sm font-bold uppercase tracking-widest text-zinc-500">{title}</span>
-    </div>
-  );
-}
-
-function SceneCard({ scene, index, ratio, onUpdate }: { scene: Scene; index: number; ratio: AspectRatio; onUpdate: (updates: Partial<Scene>) => void }) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [loadingAudio, setLoadingAudio] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(scene.imageUrl || null);
-  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
-  const [isSimulated, setIsSimulated] = useState(false);
-
-  const fallbackImageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.visualPrompt.slice(0, 150))}?nologo=true&width=${ratio === "16:9" ? 1280 : 720}&height=${ratio === "16:9" ? 720 : 1280}&seed=${index + 999}`;
-
-  const playVoice = async () => {
-    if (isPlaying) return;
-    setLoadingAudio(true);
-    try {
-      const result = await getElevenLabsAudio(scene.voiceOver);
-      if (result.success && result.url) {
-        setAudioUrl(result.url);
-        const audio = new Audio(result.url);
-        audio.onended = () => setIsPlaying(false);
-        setIsPlaying(true);
-        audio.play();
-      }
-    } finally { 
-      setLoadingAudio(false); 
-    }
-  };
-
-  const downloadFile = async (url: string, filename: string) => {
-    try {
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(blobUrl);
-    } catch { alert("Erreur de téléchargement"); }
-  };
-
-  const handleGenerateImage = async () => {
-    setIsGeneratingImage(true);
-    try {
-      const result = await generateImage(scene.visualPrompt, ratio);
-      if (result.success && result.url) {
-        setImageUrl(result.url);
-        onUpdate({ imageUrl: result.url });
-      }
-    } finally { setIsGeneratingImage(false); }
-  };
-
-  const handleGenerateVideo = async () => {
-    setIsGeneratingVideo(true);
-    try {
-      await generateVideo(imageUrl || fallbackImageUrl, scene.visualPrompt);
-      setIsSimulated(true);
-    } finally { setIsGeneratingVideo(false); }
-  };
-
-  return (
-    <div className="studio-card p-10 grid lg:grid-cols-[1fr,1fr] gap-16 items-start">
-      <div className="space-y-10">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-             <span className="w-10 h-10 flex items-center justify-center bg-[#1a1a1a] rounded-lg text-xs font-bold border border-[#333]">0{index + 1}</span>
-             <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{scene.duration} Secondes</span>
-                <span className="text-[9px] font-medium text-indigo-500 uppercase tracking-widest">Format {ratio}</span>
-             </div>
+              <div className={clsx("order-1 lg:order-2 lg:sticky lg:top-24")}>
+                <MotionPlayer ref={playerRef} project={project} onSceneChange={setActiveScene} />
+              </div>
+            </div>
           </div>
-          <div className="flex gap-3">
-            <button onClick={handleGenerateImage} disabled={isGeneratingImage} className={clsx("w-12 h-12 rounded-xl flex items-center justify-center border transition-all shadow-lg", imageUrl ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-[#1a1a1a] border-[#333] text-zinc-500 hover:border-indigo-500")}>
-              {isGeneratingImage ? <Loader2 className="w-5 h-5 animate-spin" /> : <ImageIcon className="w-5 h-5" />}
-            </button>
-            <button onClick={handleGenerateVideo} disabled={isGeneratingVideo} className={clsx("w-12 h-12 rounded-xl flex items-center justify-center border transition-all shadow-lg", isSimulated ? "bg-green-500/20 text-green-500 border-green-500/30" : "bg-[#1a1a1a] border-[#333] text-zinc-500 hover:border-green-500")}>
-              {isGeneratingVideo ? <Loader2 className="w-5 h-5 animate-spin" /> : <Clapperboard className="w-5 h-5" />}
-            </button>
-            <button onClick={playVoice} className="w-12 h-12 rounded-xl flex items-center justify-center border bg-white text-black hover:bg-indigo-500 hover:text-white transition-all shadow-lg">
-              {loadingAudio ? <Loader2 className="w-5 h-5 animate-spin" /> : (isPlaying ? <div className="w-3 h-3 bg-current rounded-sm animate-pulse" /> : <Play className="w-5 h-5 fill-current" />)}
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <div className="space-y-2">
-            <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2 italic">Script Narration</label>
-            <textarea value={scene.voiceOver} onChange={(e) => onUpdate({ voiceOver: e.target.value })} className="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 text-xl font-bold text-zinc-100 outline-none focus:border-indigo-500/50 transition-all min-h-[100px] resize-none leading-relaxed" />
-          </div>
-          <div className="space-y-2">
-            <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2 italic">Prompt Visuel IA</label>
-            <textarea value={scene.visualPrompt} onChange={(e) => onUpdate({ visualPrompt: e.target.value })} className="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 text-sm font-medium text-zinc-400 outline-none focus:border-indigo-500/50 transition-all min-h-[80px] resize-none leading-relaxed italic" />
-          </div>
-        </div>
-
-        <div className="flex gap-4 border-t border-[#1a1a1a] pt-6">
-          {imageUrl && <button onClick={() => downloadFile(imageUrl, `biopic-${index+1}.webp`)} className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] rounded-lg text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-white border border-[#333] transition-colors"><Download className="w-3 h-3" /> Image</button>}
-          {audioUrl && <button onClick={() => downloadFile(audioUrl, `audio-${index+1}.mp3`)} className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] rounded-lg text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-white border border-[#333] transition-colors"><Music className="w-3 h-3" /> Audio</button>}
-        </div>
-      </div>
-
-      <div className={clsx("relative rounded-2xl overflow-hidden border border-[#1a1a1a] shadow-2xl bg-[#0a0a0a] flex items-center justify-center group self-center transition-all duration-500", ratio === "16:9" ? "aspect-video w-full" : "aspect-[9/16] w-[60%] mx-auto")}>
-         {(isGeneratingVideo || isGeneratingImage) && (
-           <div className="absolute inset-0 bg-black/90 z-20 flex flex-col items-center justify-center gap-4">
-             <Loader2 className="w-10 h-10 text-indigo-500 animate-spin" />
-             <span className="text-[10px] font-bold text-white uppercase tracking-widest">IA Drawing...</span>
-           </div>
-         )}
-         <motion.img 
-          src={imageUrl || fallbackImageUrl} 
-          key={imageUrl || fallbackImageUrl + ratio}
-          alt="" 
-          animate={isSimulated ? { scale: [1, 1.15], y: ratio === "9:16" ? [0, -20] : [0, 0], x: ratio === "16:9" ? [0, 15] : [0, 0] } : {}}
-          transition={isSimulated ? { duration: 15, repeat: Infinity, repeatType: "reverse", ease: "linear" } : {}}
-          className="w-full h-full object-cover z-10 block" 
-         />
-         <div className="absolute bottom-6 left-6 z-30 flex gap-2">
-            <span className="px-3 py-1.5 bg-black/80 backdrop-blur-md rounded-full border border-white/10 text-[9px] font-bold uppercase tracking-widest text-indigo-400">
-               {ratio} {isSimulated ? "Animé" : "HD"}
-            </span>
-         </div>
-      </div>
+        )}
+      </main>
     </div>
   );
 }

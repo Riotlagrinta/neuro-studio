@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getProjects, Scene } from "../actions";
+import { getProjects } from "../actions";
 import { 
   Sparkles, 
   ChevronLeft, 
@@ -21,8 +21,9 @@ interface Project {
   category: string;
   topic: string;
   plan: {
-    scenes: Scene[];
-  };
+    ratio?: string;
+    scenes?: { duration?: number }[];
+  } | null;
   created_at: string;
 }
 
@@ -32,7 +33,7 @@ export default function ArchivesPage() {
 
   useEffect(() => {
     getProjects()
-      .then((data: Project[]) => setProjects(data))
+      .then((data) => setProjects(data as Project[]))
       .finally(() => setLoading(false));
   }, []);
 
@@ -53,7 +54,7 @@ export default function ArchivesPage() {
       <main className="max-w-5xl mx-auto px-6 py-20">
         <div className="mb-16 space-y-4">
           <h1 className="text-5xl font-bold tracking-tighter">Votre Bibliothèque.</h1>
-          <p className="text-zinc-500 text-xl max-w-xl">Retrouvez tous vos projets et scripts générés par NeuroStudio.</p>
+          <p className="text-zinc-500 text-xl max-w-xl">Retrouvez vos animations, avec leurs voix et leurs plans générés.</p>
         </div>
 
         {loading ? (
@@ -90,14 +91,17 @@ export default function ArchivesPage() {
                   </div>
                   <h3 className="text-2xl font-bold text-white group-hover:text-indigo-400 transition-colors">{project.title}</h3>
                   <p className="text-zinc-500 text-sm italic">Sujet: {project.topic || "N/A"}</p>
+                  <p className="text-zinc-600 text-[10px] font-bold uppercase tracking-widest">
+                    {project.plan?.scenes?.length ?? 0} scènes · {(project.plan?.scenes ?? []).reduce((sum, sc) => sum + (sc.duration ?? 0), 0).toFixed(0)} s · {project.plan?.ratio ?? "16:9"}
+                  </p>
                 </div>
                 <div className="flex gap-3">
-                   <button 
-                    onClick={() => alert("Fonctionnalité bientôt disponible : Réouverture du projet")}
+                   <Link
+                    href={`/?project=${project.id}`}
                     className="flex items-center gap-2 px-5 py-3 bg-[#1a1a1a] hover:bg-[#2a2a2a] rounded-xl border border-[#333] transition-all text-[10px] font-bold uppercase tracking-widest"
                    >
-                     Consulter
-                   </button>
+                     Rouvrir
+                   </Link>
                 </div>
               </motion.div>
             ))}
