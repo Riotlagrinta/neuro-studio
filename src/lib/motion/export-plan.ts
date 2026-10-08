@@ -71,6 +71,25 @@ export function clipTime(local: number, mediaOffset: number | undefined, clipDur
   return t > 0 ? t : 0;
 }
 
+/**
+ * Added to every clip time. A time that lands exactly on the start of a clip frame (24 fps clip in a 30 fps video: one
+ * output frame in five) must pick that frame, not the one before it: containers like WebM keep timestamps in whole
+ * milliseconds, and sums of floats are never exact.
+ */
+const CLIP_TIME_MARGIN = 0.001;
+
+/**
+ * Scene time at which a backdrop clip is sampled for the output frame drawn `local` seconds into the scene: the middle
+ * of the frame's interval, so a 30 fps clip in a 30 fps video is never near a frame boundary. The previous scene under
+ * a transition is asked for at its duration (see backdropsAt): one step past the last picture it showed, where a clip
+ * as long as the scene has wrapped to its first frame. It stays on that last picture instead, like the live player,
+ * which pauses the clip where it stopped.
+ */
+export function backdropSampleTime(local: number, sceneDuration: number, fps: number): number {
+  const shown = local >= sceneDuration ? Math.max(0, sceneDuration - 1 / fps) : local;
+  return shown + 0.5 / fps + CLIP_TIME_MARGIN;
+}
+
 /** Floating-point sums (1.5 + 2.1 + 0.4) must not cost a whole extra frame. */
 const FRAME_EPSILON = 1e-6;
 
@@ -196,10 +215,10 @@ export function chooseContainer(caps: ContainerCapabilities): ContainerChoice {
     return { container: "mp4-h264-aac", reason: audio ? "MP4 (H.264 + AAC), plus rapide que la lecture : lisible partout." : "MP4 (H.264), plus rapide que la lecture : lisible partout." };
   }
   if (caps.hasVp9 && (!audio || caps.hasOpus)) {
-    const missing = !caps.hasH264 ? "H.264" : "AAC";
+    const missing = !caps.hasH264 ? "le H.264" : "l'AAC";
     return {
       container: "webm-vp9-opus",
-      reason: `Ce navigateur n'encode pas le ${missing} : export WebM (${audio ? "VP9 + Opus" : "VP9"}), plus rapide que la lecture, lisible dans Chrome, Firefox et Edge.`,
+      reason: `Ce navigateur n'encode pas ${missing} : export WebM (${audio ? "VP9 + Opus" : "VP9"}), plus rapide que la lecture, lisible dans Chrome, Firefox et Edge.`,
     };
   }
   return { container: "realtime", reason: "Aucun encodeur MP4 ou WebM disponible ici : export en temps réel, onglet à garder visible jusqu'à la fin." };

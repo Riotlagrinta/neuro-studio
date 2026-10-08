@@ -8,6 +8,7 @@ import {
   AUDIO_SAMPLE_RATE,
   audioFrameCount,
   avcCodecString,
+  backdropSampleTime,
   backdropsAt,
   chooseContainer,
   clipTime,
@@ -17,6 +18,7 @@ import {
   frameCount,
   frameDurationUs,
   frameTimestampUs,
+  MAX_FILE_BYTES,
   vp9CodecString,
   type ContainerCapabilities,
   type ContainerChoice,
@@ -93,7 +95,9 @@ async function audioEncodable(codec: string, bitrate: number): Promise<boolean> 
  * Which container the offline export can write here, found by asking the encoders about the real configuration
  * (size, level, bitrate). Cheap, does not load Mediabunny: call it when the export options open, then grey out
  * what `container` says is impossible and show `reason`. When it answers 'realtime', use exportProjectToWebm.
- * Pass `seconds` (the project's duration) to apply the in-memory size limit.
+ * Pass `seconds` (the project's duration) to apply the in-memory size limit. The answer is the encoders' own: where one
+ * says yes and then fails (Firefox), exportProject moves to the next container, so the file name must come from
+ * ExportResult.container.
  */
 export async function getExportSupport(preset: ExportPreset, hasAudio: boolean, options: { ratio?: AspectRatio; seconds?: number } = {}): Promise<ExportSupport> {
   const hasVideoEncoder = typeof VideoEncoder !== "undefined";
@@ -122,14 +126,12 @@ export async function getExportSupport(preset: ExportPreset, hasAudio: boolean, 
 // ---------- backdrops (the scene's AI video or image) ----------
 
 const IMAGE_TIMEOUT_MS = 20_000;
+/** A download that sends nothing for this long is given up on: a stalled response never settles by itself. */
+const DOWNLOAD_IDLE_MS = 30_000;
 const VIDEO_LOAD_TIMEOUT_MS = 15_000;
 const SEEK_TIMEOUT_MS = 3_000;
-/**
- * Added to every clip time. A time that lands exactly on the start of a clip frame (24 fps clip in a 30 fps video: one
- * output frame in five) must pick that frame, not the one before it: containers like WebM keep timestamps in whole
- * milliseconds, and sums of floats are never exact.
- */
-const CLIP_TIME_MARGIN = 0.001;
+/** After 'seeked', how long to wait for the <video> to present the new picture before drawing it anyway. */
+const PRESENT_TIMEOUT_MS = 250;
 /** A jump further ahead than this is cheaper to reach from the nearest key frame than by decoding everything in between. */
 const MAX_FORWARD_JUMP = 1;
 
@@ -149,14 +151,33 @@ function loadImage(url: string): Promise<HTMLImageElement | null> {
   });
 }
 
-/** null when the file cannot be fetched (network, CORS): the scene is exported without it. */
-async function fetchBlob(url: string, signal?: AbortSignal): Promise<Blob | null> {
+/** null when the file cannot be fetched (network, CORS, stalled download): the export goes on without it. */
+async function download(url: string, signal?: AbortSignal): Promise<Blob | null> {
+  if (signal?.aborted) throw abortError();
+  const attempt = new AbortController();
+  const stop = () => attempt.abort();
+  signal?.addEventListener("abort", stop, { once: true });
+  let idle = setTimeout(stop, DOWNLOAD_IDLE_MS);
   try {
-    const res = await fetch(url, { signal });
-    return res.ok ? await res.blob() : null;
+    const res = await fetch(url, { signal: attempt.signal });
+    if (!res.ok) return null;
+    const reader = res.body?.getReader();
+    if (!reader) return await res.blob();
+    const parts: Uint8Array<ArrayBuffer>[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      clearTimeout(idle);
+      idle = setTimeout(stop, DOWNLOAD_IDLE_MS);
+    }
+    return new Blob(parts, { type: res.headers.get("content-type") ?? "" });
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;
+  } finally {
+    clearTimeout(idle);
+    signal?.removeEventListener("abort", stop);
   }
 }
 
@@ -239,12 +260,15 @@ class SinkCursor implements VideoCursor {
 }
 
 /**
- * Fallback when WebCodecs cannot decode the clip: seek a <video> to each frame and wait for 'seeked'. Slow (tens of
- * milliseconds a frame, about 100 ms on a long-GOP 1080p clip) and not perfect: 'seeked' can fire before drawImage
- * sees the new frame, so now and then (about one frame in a hundred) an output frame shows the previous clip frame.
+ * Fallback when WebCodecs cannot decode the clip: seek a <video> to each frame. Slow (tens of milliseconds a frame,
+ * about 100 ms on a long-GOP 1080p clip). 'seeked' can fire before drawImage sees the new picture (about one frame in
+ * thirty showed the previous clip frame), so each seek also waits for the video to present a frame. A hidden tab
+ * presents none and every seek would return the same picture: the cursor waits for the tab to come back.
  */
 class SeekCursor implements VideoCursor {
   private shown = false;
+  private closed = false;
+  private wake: (() => void) | null = null;
 
   private constructor(
     private readonly video: HTMLVideoElement,
@@ -269,6 +293,7 @@ class SeekCursor implements VideoCursor {
   }
 
   async frameAt(sceneTime: number, mediaOffset: number | undefined) {
+    await this.untilVisible();
     const duration = this.video.duration;
     // Never the very end of the clip: seeking there can show nothing.
     const target = Math.min(clipTime(sceneTime, mediaOffset, duration), Math.max(0, duration - 0.001));
@@ -277,17 +302,55 @@ class SeekCursor implements VideoCursor {
     return this.video;
   }
 
+  private untilVisible(): Promise<void> {
+    if (!document.hidden) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        document.removeEventListener("visibilitychange", onChange);
+        this.wake = null;
+        resolve();
+      };
+      const onChange = () => {
+        if (!document.hidden) done();
+      };
+      this.wake = done;
+      document.addEventListener("visibilitychange", onChange);
+    });
+  }
+
   /** 'seeked' sometimes never fires: one more try, then give up on this clip. */
   private async seek(target: number) {
+    if (this.closed) throw new Error("Lecture du plan vidéo interrompue.");
     for (let attempt = 0; attempt < 2; attempt++) {
       const seeked = waitFor(this.video, "seeked", SEEK_TIMEOUT_MS);
+      const presented = this.presented();
       this.video.currentTime = target;
-      if (await seeked) return;
+      if (await seeked) {
+        await presented;
+        return;
+      }
     }
     throw new Error("Le plan vidéo ne répond plus.");
   }
 
+  /** Resolves when the video presents its next frame, or after a short wait if it never does; at once without requestVideoFrameCallback. */
+  private presented(): Promise<void> {
+    const video = this.video;
+    if (typeof video.requestVideoFrameCallback !== "function") return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, PRESENT_TIMEOUT_MS);
+      const handle = video.requestVideoFrameCallback(done);
+      function done() {
+        clearTimeout(timer);
+        video.cancelVideoFrameCallback(handle);
+        resolve();
+      }
+    });
+  }
+
   close() {
+    this.closed = true;
+    this.wake?.();
     this.video.removeAttribute("src");
     this.video.load();
     URL.revokeObjectURL(this.url);
@@ -334,7 +397,7 @@ class Backdrops {
     }
     await Promise.all([
       ...[...videos].map(async (url) => {
-        const blob = await fetchBlob(url, signal);
+        const blob = await download(url, signal);
         if (blob) backdrops.blobs.set(url, blob);
       }),
       ...[...images].map(async (url) => {
@@ -354,8 +417,7 @@ class Backdrops {
   /** The picture to draw for `sceneTime` seconds into scene `index`, or null (nothing to draw). */
   async frame(index: number, sceneTime: number, fps: number): Promise<CanvasImageSource | null> {
     const scene = this.project.scenes[index];
-    // The middle of the frame's interval: a 30 fps clip in a 30 fps video is then never near a frame boundary.
-    const time = sceneTime + 0.5 / fps + CLIP_TIME_MARGIN;
+    const time = backdropSampleTime(sceneTime, scene.duration, fps);
     const blob = scene.videoUrl ? this.blobs.get(scene.videoUrl) : undefined;
     if (scene.videoUrl && blob) {
       let backdrop = this.scenes.get(index);
@@ -365,7 +427,12 @@ class Backdrops {
       }
       while (!this.disposed) {
         try {
-          backdrop.cursor ??= await this.cursorFor(backdrop);
+          const opened = backdrop.cursor ?? (await this.cursorFor(backdrop));
+          if (this.disposed) {
+            opened?.close(); // the export ended while the clip was opening
+            break;
+          }
+          backdrop.cursor = opened;
           if (!backdrop.cursor) {
             this.warn(`Le plan vidéo de la scène ${index + 1} n'a pas pu être lu : ${scene.imageUrl ? "son image le remplace" : "la scène est exportée sans fond"}.`);
             break;
@@ -435,7 +502,10 @@ class Backdrops {
     }
     if (backdrop.level === 1) {
       const cursor = await SeekCursor.open(backdrop.clip.blob);
-      if (cursor) return cursor;
+      if (cursor) {
+        this.warn("Un plan vidéo n'a pas pu être décodé image par image : lecture de secours, plus lente, où une image peut rester en retard d'un cran.");
+        return cursor;
+      }
       backdrop.level = 2;
     }
     return null;
@@ -460,8 +530,8 @@ async function renderMix(project: MotionProject, total: number, warn: (message: 
     if (!buffer) {
       buffer = (async () => {
         try {
-          const res = await fetch(url, { signal });
-          return res.ok ? await context.decodeAudioData(await res.arrayBuffer()) : null;
+          const blob = await download(url, signal);
+          return blob ? await context.decodeAudioData(await blob.arrayBuffer()) : null;
         } catch {
           return null; // also what an abort looks like here; checked right after the downloads
         }
@@ -574,10 +644,25 @@ export interface ExportResult {
 const PREPARED = 0.04;
 const ENCODED = 0.97;
 
+type WrittenContainer = ExportResult["container"];
+
+function codecsOf(container: WrittenContainer, preset: ExportPreset, width: number, height: number) {
+  return container === "mp4-h264-aac"
+    ? ({ video: "avc", audio: "aac", fullCodecString: avcCodecString(width, height, preset.fps, preset.videoBitrate) } as const)
+    : ({ video: "vp9", audio: "opus", fullCodecString: vp9CodecString(width, height) } as const);
+}
+
+/** A failed encoder surfaces as an English DOMException and the UI shows the message as it comes: give it a French one. */
+function explain(error: unknown): unknown {
+  if (error instanceof DOMException && error.name !== "AbortError") return new Error(`L'encodage de la vidéo a échoué (${error.name}).`, { cause: error });
+  return error;
+}
+
 /**
  * Exports the project faster than real time. Rejects with ExportUnavailableError when this browser cannot (use the
- * real-time export instead), with an AbortError DOMException when `signal` aborts, with an Error otherwise.
- * `onProgress` receives 0..1, audio and finalization included.
+ * real-time export instead), before encoding or midway when the file outgrows the in-memory limit, with an AbortError
+ * DOMException when `signal` aborts, with an Error (French message) otherwise. `onProgress` receives 0..1, audio and
+ * finalization included.
  */
 export async function exportProject(project: MotionProject, onProgress: (fraction: number) => void, { preset, signal }: ExportOptions): Promise<ExportResult> {
   const total = projectDuration(project);
@@ -591,20 +676,30 @@ export async function exportProject(project: MotionProject, onProgress: (fractio
   const hasAudio = sceneAudioSchedule(project).length > 0 || Boolean(project.music?.url);
   const support = await getExportSupport(preset, hasAudio, { ratio: project.ratio, seconds: total });
   if (support.container === "realtime") throw new ExportUnavailableError(support.reason);
-  const container = support.container;
   const { width, height } = exportSize(preset, project.ratio);
-  const isMp4 = container === "mp4-h264-aac";
-  const videoCodec = isMp4 ? "avc" : "vp9";
-  const audioCodec = isMp4 ? "aac" : "opus";
-  const fullCodecString = isMp4 ? avcCodecString(width, height, preset.fps, preset.videoBitrate) : vp9CodecString(width, height);
   // Destructured so that a bundler that can tree-shake dynamic imports keeps only what is used.
   const { ALL_FORMATS, AudioBufferSource, BlobSource, BufferTarget, CanvasSink, CanvasSource, Input, Mp4OutputFormat, Output, Quality, WebMOutputFormat, canEncodeAudio, canEncodeVideo } = await import("mediabunny");
   checkAbort();
   const videoQuality = new Quality({ bitrate: preset.videoBitrate, bitrateMode: "variable" });
 
-  // Mediabunny's own check also covers Firefox, where isConfigSupported can say yes and encoding then fail.
-  if (!(await canEncodeVideo(videoCodec, { width, height, quality: videoQuality, frameRate: preset.fps, fullCodecString, latencyMode: "quality" }))) {
-    throw new ExportUnavailableError("L'encodeur vidéo de ce navigateur refuse cette configuration.");
+  // isConfigSupported can say yes where encoding then fails (Firefox): Mediabunny encodes a trial frame instead. A
+  // container whose encoders refuse hands over to the next one, before anything is downloaded.
+  let capabilities = support.capabilities;
+  let choice: ContainerChoice = support;
+  let container: WrittenContainer;
+  let codecs: ReturnType<typeof codecsOf>;
+  for (;;) {
+    if (choice.container === "realtime") throw new ExportUnavailableError(choice.reason);
+    container = choice.container;
+    codecs = codecsOf(container, preset, width, height);
+    const mp4 = container === "mp4-h264-aac";
+    if (!(await canEncodeVideo(codecs.video, { width, height, quality: videoQuality, frameRate: preset.fps, fullCodecString: codecs.fullCodecString, latencyMode: "quality" }))) {
+      capabilities = mp4 ? { ...capabilities, hasH264: false } : { ...capabilities, hasVp9: false };
+    } else if (hasAudio && !(await canEncodeAudio(codecs.audio, { numberOfChannels: AUDIO_CHANNELS, sampleRate: AUDIO_SAMPLE_RATE, quality: new Quality({ bitrate: AUDIO_BITRATE[codecs.audio] }) }))) {
+      capabilities = mp4 ? { ...capabilities, hasAac: false } : { ...capabilities, hasOpus: false };
+    } else break;
+    checkAbort();
+    choice = chooseContainer(capabilities);
   }
 
   const warnings: string[] = [];
@@ -623,6 +718,17 @@ export async function exportProject(project: MotionProject, onProgress: (fractio
 
   let backdrops: Backdrops | null = null;
   let output: Mediabunny.Output<Mediabunny.OutputFormat, Mediabunny.BufferTarget> | null = null;
+  let finalized = false;
+  // The file is built in memory: whatever the bitrate does, it stops here rather than take the tab down with it.
+  let encodedBytes = 0;
+  const countBytes = (packet: Mediabunny.EncodedPacket) => {
+    encodedBytes += packet.byteLength;
+  };
+  const checkSize = () => {
+    if (encodedBytes > MAX_FILE_BYTES) {
+      throw new ExportUnavailableError(`La vidéo dépasse ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} Mo, trop pour l'export rapide qui la garde en mémoire : export en temps réel, onglet à garder visible jusqu'à la fin.`);
+    }
+  };
   try {
     backdrops = await abortable(Backdrops.load({ ALL_FORMATS, BlobSource, CanvasSink, Input }, project, warn, signal), signal);
     onProgress(PREPARED / 2);
@@ -630,26 +736,22 @@ export async function exportProject(project: MotionProject, onProgress: (fractio
     checkAbort();
     onProgress(PREPARED);
 
-    const audioQuality = new Quality({ bitrate: AUDIO_BITRATE[audioCodec] });
-    if (mix && !(await canEncodeAudio(audioCodec, { numberOfChannels: AUDIO_CHANNELS, sampleRate: AUDIO_SAMPLE_RATE, quality: audioQuality }))) {
-      throw new ExportUnavailableError("L'encodeur audio de ce navigateur refuse cette configuration.");
-    }
-
-    output = new Output({ format: isMp4 ? new Mp4OutputFormat({ fastStart: "in-memory" }) : new WebMOutputFormat(), target: new BufferTarget() });
-    const video = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, fullCodecString, keyFrameInterval: 2, latencyMode: "quality" });
+    output = new Output({ format: container === "mp4-h264-aac" ? new Mp4OutputFormat({ fastStart: "in-memory" }) : new WebMOutputFormat(), target: new BufferTarget() });
+    const video = new CanvasSource(canvas, { codec: codecs.video, quality: videoQuality, fullCodecString: codecs.fullCodecString, keyFrameInterval: 2, latencyMode: "quality", onEncodedPacket: countBytes });
     output.addVideoTrack(video, { frameRate: preset.fps });
     let pump: AudioPump | null = null;
     if (mix) {
-      const audio = new AudioBufferSource({ codec: audioCodec, quality: audioQuality });
+      const audio = new AudioBufferSource({ codec: codecs.audio, quality: new Quality({ bitrate: AUDIO_BITRATE[codecs.audio] }), onEncodedPacket: countBytes });
       output.addAudioTrack(audio);
       pump = new AudioPump(audio, mix, signal);
     }
-    await output.start();
+    await abortable(output.start(), signal);
 
     let lastYield = performance.now();
     let lastReported = -1;
     for (let i = 0; i < frames; i++) {
       checkAbort();
+      checkSize();
       const t = i / preset.fps;
       const needs = backdropsAt(project, t);
       backdrops.retain(new Set(needs.map((need) => need.sceneIndex)));
@@ -676,7 +778,9 @@ export async function exportProject(project: MotionProject, onProgress: (fractio
     video.close();
     await pump?.until(Infinity);
     checkAbort();
-    await output.finalize();
+    checkSize();
+    await abortable(output.finalize(), signal);
+    finalized = true;
     checkAbort();
     const buffer = output.target.buffer;
     if (!buffer) throw new Error("Le fichier vidéo est vide.");
@@ -685,8 +789,8 @@ export async function exportProject(project: MotionProject, onProgress: (fractio
     const { extension, mime } = containerFormat(container);
     return { blob: new Blob([buffer], { type: mime }), mime, extension, container, warnings };
   } catch (error) {
-    await output?.cancel().catch(() => {});
-    throw error;
+    if (!finalized) await output?.cancel().catch(() => {});
+    throw explain(error);
   } finally {
     backdrops?.dispose();
     canvas.width = canvas.height = 0;

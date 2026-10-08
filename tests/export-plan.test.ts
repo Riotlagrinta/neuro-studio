@@ -6,6 +6,7 @@ import {
   MAX_FILE_BYTES,
   audioFrameCount,
   avcCodecString,
+  backdropSampleTime,
   backdropsAt,
   chooseContainer,
   clipTime,
@@ -122,6 +123,38 @@ t("clipTime agrees with the formula of MediaStage.enter over a grid", () => {
   }
 });
 
+t("backdropSampleTime: the middle of the frame, plus the margin that picks the newer clip frame on an exact boundary", () => {
+  assert.ok(Math.abs(backdropSampleTime(0, 4, 30) - (0.5 / 30 + 0.001)) < 1e-12);
+  assert.ok(Math.abs(backdropSampleTime(1.5, 4, 30) - (1.5 + 0.5 / 30 + 0.001)) < 1e-12);
+  // 24 fps clip in a 30 fps video: output frame 5 starts at 5/30 s, exactly on the start of clip frame 4 (4/24 s).
+  const clipFrame = (local: number) => Math.floor(clipTime(backdropSampleTime(local, 10, 30), undefined, 10) * 24);
+  for (let i = 0; i < 300; i++) assert.equal(clipFrame(i / 30), Math.floor(((i + 0.5) / 30 + 0.001) * 24), `output frame ${i}`);
+  assert.equal(clipFrame(5 / 30), 4);
+});
+
+t("backdropSampleTime: the frozen previous scene stays on its last picture, even when the clip is exactly as long as the scene", () => {
+  const lastFrame = (clipDuration: number) => Math.floor(clipDuration * 30) - 1;
+  const frame = (sceneDuration: number, offset: number | undefined, clipDuration: number) =>
+    Math.floor(clipTime(backdropSampleTime(sceneDuration, sceneDuration, 30), offset, clipDuration) * 30);
+  for (const duration of [1, 2, 3, 4, 10]) {
+    assert.equal(frame(duration, undefined, duration), lastFrame(duration), `scene ${duration} s on a ${duration} s clip`); // not 0: the clip has not wrapped
+    assert.equal(frame(2 * duration, undefined, duration), lastFrame(duration), `scene ${2 * duration} s on a ${duration} s clip`);
+    assert.equal(frame(duration, duration / 2, duration / 2), lastFrame(duration / 2), `offset: scene ${duration} s on a ${duration / 2} s clip`);
+  }
+  assert.equal(frame(2, 2, 4), lastFrame(4), "offset + duration reaches the end of the clip");
+  assert.equal(frame(3, undefined, 4), 89, "a shorter scene keeps its last picture");
+});
+
+t("backdropSampleTime: the frozen time is within one frame of the last picture the scene really drew", () => {
+  for (let i = 3; i < 400; i++) {
+    const duration = i * 0.0137;
+    const lastDrawn = (Math.ceil(duration * 30 - 1e-9) - 1) / 30; // start of the last output frame that begins inside the scene
+    const gap = Math.abs(backdropSampleTime(lastDrawn, duration, 30) - backdropSampleTime(duration, duration, 30));
+    assert.ok(gap <= 1 / 30 + 1e-9, `duration ${duration}: gap ${gap}`);
+  }
+  assert.ok(backdropSampleTime(0.01, 0.01, 30) > 0, "a scene shorter than one frame does not go negative");
+});
+
 t("clipTime: a clip with no usable duration, or broken numbers, stays on its first frame", () => {
   for (const d of [0, -1, NaN, Infinity]) assert.equal(clipTime(2, 1, d), 0);
   assert.equal(clipTime(2, NaN, 4), 0);
@@ -173,6 +206,8 @@ t("audioFrameCount: samples of the mix, never shorter than the picture", () => {
   assert.equal(audioFrameCount(1.5 + 2.1 + 0.4), 192_000);
   assert.equal(audioFrameCount(3.47), Math.ceil(3.47 * 48_000));
   assert.equal(audioFrameCount(0), 1);
+  assert.equal(audioFrameCount(1.00001), 48_001); // 48 000.48 samples: rounded up, never cut short
+  assert.equal(audioFrameCount(0.1234567), 5_926);
 });
 
 // ---------- size guard ----------
@@ -270,6 +305,8 @@ t("chooseContainer: every decision comes with a French reason", () => {
   assert.ok(reasons.size >= 6, `distinct reasons: ${reasons.size}`);
   assert.match(chooseContainer(caps({ hasH264: false, hasAac: false })).reason, /H\.264/);
   assert.match(chooseContainer(caps({ hasAac: false })).reason, /AAC/);
+  assert.match(chooseContainer(caps({ hasAac: false })).reason, /n'encode pas l'AAC/);
+  assert.match(chooseContainer(caps({ hasH264: false })).reason, /n'encode pas le H\.264/);
 });
 
 // ---------- backdrops: the mirror of renderFrame's branching ----------
