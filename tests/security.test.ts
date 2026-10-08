@@ -342,7 +342,7 @@ async function scenario(variant: "legacy" | "fresh") {
     setUser(A);
     const list = await actions.getProjects();
     assert.equal(list.success && list.projects.length, 1);
-    assert.ok(list.success && list.projects.every((p: { topic: string }) => p.topic === "my secret topic"));
+    assert.ok(list.success && list.projects.every((p) => p.topic === "my secret topic"));
   });
   await t("a stored project keeps its owner in the database", async () => {
     const r = await db.query<{ user_id: string }>(`SELECT user_id FROM projects WHERE id = $1`, [aProject]);

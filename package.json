@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "test:types": "tsc --noEmit -p tests/tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
