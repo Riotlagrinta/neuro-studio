@@ -120,18 +120,43 @@ export async function generateContent(
       }
     `;
 
-    const completion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Sujet / Idée de film [Genre: ${genre}] : ${topic}` },
-      ],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.7,
-      response_format: { type: "json_object" },
-    });
+    const fallbackModels = [
+      "openai/gpt-oss-120b",
+      "qwen/qwen3.8-27b",
+      "openai/gpt-oss-20b",
+      "llama-3.3-70b-versatile",
+      "llama-3.1-70b-versatile",
+      "llama-3.1-8b-instant",
+    ];
 
-    const content = completion.choices[0]?.message?.content;
-    if (!content) return { success: false, error: "IA_VIDE" };
+    let content: string | null = null;
+    let lastError: Error | null = null;
+
+    for (const model of fallbackModels) {
+      try {
+        const completion = await groq.chat.completions.create({
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `Sujet / Idée de film [Genre: ${genre}] : ${topic}` },
+          ],
+          model,
+          temperature: 0.7,
+          response_format: { type: "json_object" },
+        });
+
+        content = completion.choices[0]?.message?.content || null;
+        if (content) {
+          break;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`⚠️ Modèle Groq ${model} non disponible, basculement automatique...`);
+      }
+    }
+
+    if (!content) {
+      return { success: false, error: lastError?.message || "IA_VIDE" };
+    }
 
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     const data = JSON.parse(jsonMatch ? jsonMatch[0] : content);
