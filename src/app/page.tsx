@@ -876,14 +876,26 @@ function SceneRowCard({
               <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-1.5">
                 <span>Voix-off (Narration 8s)</span>
               </label>
-              <button
-                onClick={playVoice}
-                disabled={loadingAudio}
-                className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
-              >
-                {loadingAudio ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                <span>{isPlaying ? "Lecture..." : "Écouter (ElevenLabs)"}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={playVoice}
+                  disabled={loadingAudio}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+                >
+                  {loadingAudio ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                  <span>{isPlaying ? "Lecture en cours..." : "Générer la Voix (Gratuit)"}</span>
+                </button>
+                {audioUrl && (
+                  <a
+                    href={audioUrl}
+                    download={`scene-${index + 1}-voix.mp3`}
+                    className="p-1 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white"
+                    title="Télécharger l'audio de la scène"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </div>
             </div>
             <textarea
               value={scene.voiceOver}

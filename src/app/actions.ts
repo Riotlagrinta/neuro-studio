@@ -232,46 +232,80 @@ export async function generateImage(prompt: string, ratio: "16:9" | "9:16" = "16
 }
 
 /**
- * Synthèse vocale de la voix-off via ElevenLabs
+ * Synthèse vocale IA : Moteur Edge TTS 100% Gratuit & Illimité (Voix Neuronales Françaises)
+ * Supporte Henri (Homme, narrateur grave et épique) et Denise (Femme, captivante).
+ * Repli sur ElevenLabs si configuré et demandé.
  */
-export async function getElevenLabsAudio(text: string) {
+export async function generateVoiceAudio(
+  text: string, 
+  voice: "fr-FR-HenriNeural" | "fr-FR-DeniseNeural" | "fr-FR-RemyMultilingualNeural" = "fr-FR-HenriNeural"
+) {
   try {
-    const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-    if (!apiKey) return { success: false, error: "CLÉ_ELEVEN_MANQUANTE" };
+    const cleanText = text.replace(/["«»]/g, "").trim();
+    if (!cleanText) return { success: false, error: "TEXTE_VIDE" };
 
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/pNInz6OB85MvRmPLz5QN`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "xi-api-key": apiKey },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_multilingual_v2",
-        voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-      }),
+    const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    
+    const { audioStream } = tts.toStream(cleanText);
+    const chunks: Buffer[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      audioStream.on("end", () => resolve());
+      audioStream.on("error", (err: Error) => reject(err));
     });
 
-    if (!response.ok) return { success: false, error: `ELEVEN_HTTP_${response.status}` };
+    const buffer = Buffer.concat(chunks);
+    const base64Audio = buffer.toString("base64");
+    const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
 
-    const buffer = await response.arrayBuffer();
-    const base64Audio = Buffer.from(buffer).toString("base64");
-    
     try {
       if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const uploadResponse = await cloudinary.uploader.upload(`data:audio/mpeg;base64,${base64Audio}`, {
+        const uploadResponse = await cloudinary.uploader.upload(dataUri, {
           resource_type: "video",
           folder: "neuro-studio-audios",
         });
         return { success: true, url: uploadResponse.secure_url };
       }
     } catch {
-      return { success: true, url: `data:audio/mpeg;base64,${base64Audio}` };
+      // repli sur le data URI autonome
     }
 
-    return { success: true, url: `data:audio/mpeg;base64,${base64Audio}` };
+    return { success: true, url: dataUri };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "ECHEC_AUDIO";
+    console.error("Erreur Edge TTS :", error);
+    // Repli ElevenLabs si la clé existe
+    const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+    if (apiKey) {
+      try {
+        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/pNInz6OB85MvRmPLz5QN`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "xi-api-key": apiKey },
+          body: JSON.stringify({
+            text,
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+          }),
+        });
+        if (response.ok) {
+          const buffer = await response.arrayBuffer();
+          const base64Audio = Buffer.from(buffer).toString("base64");
+          return { success: true, url: `data:audio/mpeg;base64,${base64Audio}` };
+        }
+      } catch {
+        // échec repli
+      }
+    }
+
+    const message = error instanceof Error ? error.message : "ECHEC_VOIX_GRATUITE";
     return { success: false, error: message };
   }
 }
+
+// Rétrocompatibilité
+export const getElevenLabsAudio = generateVoiceAudio;
 
 export async function saveProject(topic: string, plan: ContentPlan) {
   try {
