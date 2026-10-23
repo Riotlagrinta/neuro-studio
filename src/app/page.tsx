@@ -25,7 +25,10 @@ import {
   Search,
   Smile,
   Shield,
-  Layers
+  Layers,
+  Clock,
+  Plus,
+  Trash2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -150,6 +153,35 @@ export default function Home() {
     newScenes[index] = { ...newScenes[index], ...updates };
     setPlan({ ...plan, scenes: newScenes });
   };
+
+  const handleAddScene = () => {
+    if (!plan) return;
+    const newId = plan.scenes.length + 1;
+    const lastScene = plan.scenes[plan.scenes.length - 1];
+    const newScene: Scene = {
+      id: newId,
+      title: `Scène ${newId}`,
+      duration: 8,
+      setting: lastScene?.setting || "Même décor",
+      charactersInvolved: lastScene?.charactersInvolved || [],
+      voiceOver: "Narration suite de l'action...",
+      visualPrompt: `Ultra-realistic cinematic video, 8 seconds. ${lastScene?.setting || "Same environment"}. Continuing the scene naturally, seamless motion raccord, natural acting, shallow depth of field, 4K ultra detail.`,
+      cameraStyle: "Dynamic tracking shot, 4K",
+      emotion: "Intense suspense",
+    };
+    setPlan({ ...plan, scenes: [...plan.scenes, newScene] });
+  };
+
+  const handleDeleteScene = (index: number) => {
+    if (!plan || plan.scenes.length <= 1) return;
+    const newScenes = plan.scenes.filter((_, i) => i !== index).map((s, i) => ({ ...s, id: i + 1 }));
+    setPlan({ ...plan, scenes: newScenes });
+  };
+
+  const totalSeconds = (plan?.scenes?.length || 0) * 8;
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainingSecs = totalSeconds % 60;
+  const runtimeFormatted = `${minutes}m${remainingSecs < 10 ? "0" : ""}${remainingSecs}`;
 
   const masterExport = async () => {
     if (!plan) return;
@@ -419,8 +451,12 @@ export default function Home() {
                       <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 rounded-md">
                         {plan.tone}
                       </span>
+                      <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-md flex items-center gap-1.5">
+                        <Clock className="w-3 h-3" />
+                        <span>{runtimeFormatted} ({plan.scenes.length} scènes de 8s • 1m30 max)</span>
+                      </span>
                       <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-2.5 py-1 bg-white/[0.04] border border-white/[0.08] rounded-md">
-                        Format {globalRatio} • {plan.scenes.length} Scènes (8s)
+                        Format {globalRatio}
                       </span>
                     </div>
                     <input 
@@ -556,8 +592,17 @@ export default function Home() {
                         ratio={globalRatio}
                         characters={plan.characters}
                         onUpdate={(updates) => updateScene(idx, updates)}
+                        onDelete={plan.scenes.length > 1 ? () => handleDeleteScene(idx) : undefined}
                       />
                     ))}
+
+                    <button
+                      onClick={handleAddScene}
+                      className="w-full py-4 rounded-2xl bg-white/[0.03] hover:bg-white/[0.06] border border-dashed border-white/[0.12] hover:border-indigo-500/50 text-zinc-300 hover:text-white flex items-center justify-center gap-2 text-xs uppercase font-bold tracking-wider transition-all"
+                    >
+                      <Plus className="w-4 h-4 text-indigo-400" />
+                      <span>Ajouter une scène de 8s ({plan.scenes.length + 1}e scène • Extension 1m30)</span>
+                    </button>
                   </div>
                 </div>
               )}
@@ -724,13 +769,15 @@ function SceneRowCard({
   index, 
   ratio, 
   characters,
-  onUpdate 
+  onUpdate,
+  onDelete
 }: { 
   scene: Scene; 
   index: number; 
   ratio: AspectRatio; 
   characters: Character[];
   onUpdate: (updates: Partial<Scene>) => void;
+  onDelete?: () => void;
 }) {
   const [copiedFlow, setCopiedFlow] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -793,19 +840,31 @@ function SceneRowCard({
           </div>
         </div>
 
-        {/* Bouton phare : Copier pour Google Flow */}
-        <button
-          onClick={copyFlowPrompt}
-          className={clsx(
-            "flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-lg",
-            copiedFlow 
-              ? "bg-emerald-600 text-white shadow-emerald-600/30" 
-              : "bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-600/25 hover:scale-[1.02]"
+        {/* Boutons d'action */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={copyFlowPrompt}
+            className={clsx(
+              "flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-lg",
+              copiedFlow 
+                ? "bg-emerald-600 text-white shadow-emerald-600/30" 
+                : "bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-600/25 hover:scale-[1.02]"
+            )}
+          >
+            {copiedFlow ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
+            <span>{copiedFlow ? "Copié pour Google Flow !" : "Copier le Prompt Flow"}</span>
+          </button>
+
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="p-2.5 rounded-xl bg-white/[0.04] hover:bg-red-500/20 text-zinc-500 hover:text-red-400 border border-white/[0.06] transition-colors"
+              title="Supprimer cette scène"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
           )}
-        >
-          {copiedFlow ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
-          <span>{copiedFlow ? "Copié pour Google Flow !" : "Copier le Prompt Flow"}</span>
-        </button>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6 items-start">

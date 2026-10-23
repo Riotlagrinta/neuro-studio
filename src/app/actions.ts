@@ -68,18 +68,24 @@ export async function generateContent(
       Tu adaptes la mise en scène, l'ambiance lumineuse et le cadrage au genre demandé : "${genre}".
       Le format de diffusion est : ${format === "16:9" ? "16:9 (Cinéma / YouTube)" : "9:16 (TikTok / Reels / Shorts)"}.
 
-      RÈGLES D'OR DE PRODUCTION POUR GOOGLE FLOW :
-      1. LE CASTING (2 à 4 personnages clés de l'univers) :
-         - Pour chaque personnage, définis une IDENTITÉ VISUELLE STRICTE (âge précis, taille exacte, silhouette, carnation/teint, coupe de cheveux/barbe ou traits particuliers, tenue vestimentaire complète méticuleusement décrite avec matières, couleurs et accessoires adaptés au genre).
+      RÈGLES D'OR DE PRODUCTION POUR GOOGLE FLOW (FORMAT 1M30 MAX) :
+      1. LE CASTING (2 à 3 personnages clés de l'univers) :
+         - Pour chaque personnage, définis une IDENTITÉ VISUELLE STRICTE (âge précis, taille exacte, silhouette, carnation/teint "dark black skin", coupe de cheveux/barbe ou traits particuliers, tenue vestimentaire complète méticuleusement décrite avec matières, couleurs et accessoires adaptés au genre).
          - "visualPrompt" : Prompt en anglais pour générer son portrait officiel de référence 8K (Ultra-realistic 8k studio character reference portrait, sharp facial details, matching genre lighting, photorealistic, neutral background).
 
-      2. LES SCÈNES SÉQUENTIELLES (6 à 8 scènes de 8 secondes exactement) :
-         - Chaque scène dure 8 secondes ("duration": 8).
-         - "voiceOver" : Narration percutante en français, stylisée selon le genre (voix posée de narrateur, souffle court de suspense, dialogue intense ou ton humoristique), calibrée pour 8 secondes.
+      2. LES SCÈNES SÉQUENTIELLES POUR 1M30 (EXACTEMENT 11 À 12 SCÈNES DE 8 SECONDES = 88 À 96 SECONDES TOTAL) :
+         - Tu DOIS IMPÉRATIVEMENT générer entre 11 et 12 scènes de 8 secondes chacune ("duration": 8). C'est la durée obligatoire pour atteindre 1 minute 30 au montage final.
+         - Structure le film sur cette courbe dramatique complète de 1m30 :
+           * Scènes 1 et 2 (00s - 16s) : L'ACCROCHE (The Hook) - Situation de tension, d'urgence ou d'injustice immédiate.
+           * Scènes 3 à 5 (16s - 40s) : LA TENSION & L'OBSTACLE - Rejet, confrontation, escalade du problème.
+           * Scènes 6 à 8 (40s - 64s) : L'ACTION DÉCISIVE & LE CHOIX - Sacrifice, courage, geste héroïque secret.
+           * Scènes 9 et 10 (64s - 80s) : LE PLOT TWIST & LA RÉVÉLATION - Retournement de situation choc.
+           * Scènes 11 et 12 (80s - 92s) : LE CLIMAX ÉMOTIONNEL & CONCLUSION - Réconciliation, reconnaissance, symbole fort.
+         - Raccord de montage (Cut-on-action) : Chaque scène N+1 commence obligatoirement là où la scène N s'est arrêtée (continuité immédiate du mouvement).
+         - "voiceOver" : Narration captivante en français, stylisée selon le genre, rythmée et synchronisée pour 8 secondes.
          - "visualPrompt" : DOIT OBLIGATOIREMENT commencer par la formule d'or de Google Flow :
-           "Ultra-realistic cinematic video, 8 seconds. [Lieu et ambiance stylisée du genre]. [Description physique et vestimentaire intégrale répétée des personnages présents pour cohérence absolue]. [Action précise, micro-expressions réalistes, interactions naturelles - strictly no looking at camera]. [Arrière-plan dynamique et vivant]. [Mouvements de caméra cinématographiques : handheld tracking shot, drone shot, fast tracking, slow dolly-in, over-the-shoulder]. Cinematic lighting, shallow depth of field, 4K ultra detail, natural motion."
+           "Ultra-realistic cinematic video, 8 seconds. [Lieu et ambiance stylisée du genre]. [Description physique et vestimentaire intégrale répétée mot pour mot des personnages présents pour cohérence absolue]. [Action précise dans la continuité de la scène précédente, micro-expressions réalistes, interactions naturelles - strictly no looking at camera]. [Arrière-plan dynamique et vivant]. [Mouvements de caméra cinématographiques : handheld tracking shot, drone shot, fast tracking, slow dolly-in, over-the-shoulder]. Cinematic lighting, shallow depth of field, 4K ultra detail, natural motion."
          - Continuité absolue : Les personnages gardent STRICTEMENT les mêmes vêtements, coiffures et accessoires d'une scène à l'autre.
-         - La dernière scène offre un climax marquant, un cliffhanger palpitant ou une conclusion forte adaptée au genre.
 
       Réponds UNIQUEMENT avec un objet JSON valide structuré comme ceci :
       {
@@ -141,6 +147,7 @@ export async function generateContent(
           ],
           model,
           temperature: 0.7,
+          max_tokens: 8000,
           response_format: { type: "json_object" },
         });
 
