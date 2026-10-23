@@ -28,7 +28,8 @@ import {
   Layers,
   Clock,
   Plus,
-  Trash2
+  Trash2,
+  Mic
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -42,7 +43,10 @@ import {
   getElevenLabsAudio, 
   getQuota, 
   generateCharacterImage, 
-  generateImage 
+  generateImage,
+  generateSceneAudio,
+  generateVoiceAudio,
+  AVAILABLE_VOICES
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -630,6 +634,7 @@ function CharacterCard({
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
 
   const handleGeneratePortrait = async () => {
     setIsGenerating(true);
@@ -640,6 +645,24 @@ function CharacterCard({
       }
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handlePreviewVoice = async () => {
+    setIsPlayingVoice(true);
+    try {
+      const voiceToUse = character.voiceId || "fr-FR-HenriNeural";
+      const sampleText = `Bonjour, je suis la voix de ${character.name}.`;
+      const result = await generateVoiceAudio(sampleText, voiceToUse);
+      if (result.success && result.url) {
+        const audio = new Audio(result.url);
+        audio.onended = () => setIsPlayingVoice(false);
+        audio.play();
+      } else {
+        setIsPlayingVoice(false);
+      }
+    } catch {
+      setIsPlayingVoice(false);
     }
   };
 
@@ -724,6 +747,36 @@ function CharacterCard({
           <div><strong className="text-zinc-500">Tenue :</strong> {character.appearance?.outfit}</div>
         </div>
 
+        {/* Sélecteur de Voix Neuronale */}
+        <div className="space-y-1.5 bg-white/[0.02] p-3 rounded-xl border border-white/[0.05]">
+          <div className="flex items-center justify-between">
+            <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest flex items-center gap-1.5">
+              <Mic className="w-3 h-3" />
+              <span>Voix du Personnage</span>
+            </label>
+            <button
+              onClick={handlePreviewVoice}
+              disabled={isPlayingVoice}
+              className="text-[10px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
+              title="Écouter un échantillon de cette voix"
+            >
+              {isPlayingVoice ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3 fill-current" />}
+              <span>{isPlayingVoice ? "Écoute..." : "Tester la voix"}</span>
+            </button>
+          </div>
+          <select
+            value={character.voiceId || "fr-FR-HenriNeural"}
+            onChange={(e) => onUpdate({ voiceId: e.target.value })}
+            className="w-full bg-black/60 border border-white/[0.1] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 outline-none focus:border-indigo-500 cursor-pointer"
+          >
+            {AVAILABLE_VOICES.map((v) => (
+              <option key={v.id} value={v.id} className="bg-[#111] text-white">
+                {v.name} ({v.tag})
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Prompt visuel en anglais */}
         <div className="space-y-1.5">
           <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block">
@@ -795,9 +848,10 @@ function SceneRowCard({
     if (isPlaying) return;
     setLoadingAudio(true);
     try {
-      const result = await getElevenLabsAudio(scene.voiceOver);
+      const result = await generateSceneAudio(scene, characters);
       if (result.success && result.url) {
         setAudioUrl(result.url);
+        onUpdate({ audioUrl: result.url });
         const audio = new Audio(result.url);
         audio.onended = () => setIsPlaying(false);
         setIsPlaying(true);
@@ -869,39 +923,55 @@ function SceneRowCard({
 
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         
-        {/* Narration */}
+        {/* Narration & Dialogues */}
         <div className="space-y-4">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-1.5">
-                <span>Voix-off (Narration 8s)</span>
+                <Mic className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Dialogues & Répliques (8s)</span>
               </label>
               <div className="flex items-center gap-2">
                 <button
                   onClick={playVoice}
                   disabled={loadingAudio}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-xs text-indigo-300 hover:text-white font-medium transition-colors border border-indigo-500/30 shadow-sm"
                 >
                   {loadingAudio ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                  <span>{isPlaying ? "Lecture en cours..." : "Générer la Voix (Gratuit)"}</span>
+                  <span>{isPlaying ? "Lecture en cours..." : "Générer les Voix (Multi-Acteurs)"}</span>
                 </button>
                 {audioUrl && (
                   <a
                     href={audioUrl}
-                    download={`scene-${index + 1}-voix.mp3`}
-                    className="p-1 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white"
-                    title="Télécharger l'audio de la scène"
+                    download={`scene-${index + 1}-dialogues.mp3`}
+                    className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.08]"
+                    title="Télécharger l'audio complet de la scène"
                   >
                     <Download className="w-3.5 h-3.5" />
                   </a>
                 )}
               </div>
             </div>
-            <textarea
-              value={scene.voiceOver}
-              onChange={(e) => onUpdate({ voiceOver: e.target.value })}
-              className="w-full bg-black/40 border border-white/[0.08] rounded-xl p-3.5 text-sm text-zinc-200 outline-none focus:border-indigo-500/50 min-h-[90px] leading-relaxed"
-            />
+
+            {/* Affichage des répliques détaillées par personnage si disponibles */}
+            {scene.dialogues && scene.dialogues.length > 0 ? (
+              <div className="space-y-2 bg-black/40 border border-white/[0.08] rounded-xl p-3.5">
+                {scene.dialogues.map((dlg, dIdx) => (
+                  <div key={dIdx} className="text-xs space-y-0.5 border-b border-white/[0.04] last:border-b-0 pb-2 last:pb-0">
+                    <span className="font-bold text-indigo-400 uppercase tracking-wider text-[10px]">
+                      {dlg.speaker} :
+                    </span>
+                    <p className="text-zinc-200 italic font-medium leading-relaxed">« {dlg.text} »</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                value={scene.voiceOver}
+                onChange={(e) => onUpdate({ voiceOver: e.target.value })}
+                className="w-full bg-black/40 border border-white/[0.08] rounded-xl p-3.5 text-sm text-zinc-200 outline-none focus:border-indigo-500/50 min-h-[90px] leading-relaxed"
+              />
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2 text-[11px] text-zinc-400">

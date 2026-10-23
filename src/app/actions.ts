@@ -4,6 +4,31 @@ import { groq } from "@/lib/groq-client";
 import { sql } from "@/lib/db";
 import cloudinary from "@/lib/cloudinary";
 
+export interface VoiceOption {
+  id: string;
+  name: string;
+  gender: string;
+  tag: string;
+}
+
+export const AVAILABLE_VOICES: VoiceOption[] = [
+  // Hommes
+  { id: "fr-FR-HenriNeural", name: "Henri (France)", gender: "Homme", tag: "Grave / Mature / Narrateur / Autorité" },
+  { id: "fr-FR-RemyMultilingualNeural", name: "Rémy (France)", gender: "Homme", tag: "Jeune / Dynamique / Héros / Stagiaire" },
+  { id: "fr-BE-GerardNeural", name: "Gérard (Belgique)", gender: "Homme", tag: "Posé / Chaleureux / Directeur" },
+  { id: "fr-CA-AntoineNeural", name: "Antoine (Canada)", gender: "Homme", tag: "Naturel / Moderne / Décontracté" },
+  { id: "fr-CA-JeanNeural", name: "Jean (Canada)", gender: "Homme", tag: "Profond / Sérieux / Dramatique" },
+  { id: "fr-CH-FabriceNeural", name: "Fabrice (Suisse)", gender: "Homme", tag: "Distingué / Précis / Policier" },
+
+  // Femmes
+  { id: "fr-FR-DeniseNeural", name: "Denise (France)", gender: "Femme", tag: "Affirmée / Directrice / Élégante" },
+  { id: "fr-FR-EloiseNeural", name: "Éloïse (France)", gender: "Femme", tag: "Douce / Jeune / Émotive / Soignante" },
+  { id: "fr-FR-VivienneMultilingualNeural", name: "Vivienne (France)", gender: "Femme", tag: "Expressive / Action / Tension / Narratrice" },
+  { id: "fr-BE-CharlineNeural", name: "Charline (Belgique)", gender: "Femme", tag: "Lumineuse / Pétillante / Espiègle" },
+  { id: "fr-CA-SylvieNeural", name: "Sylvie (Canada)", gender: "Femme", tag: "Maternelle / Chaleureuse / Réconfortante" },
+  { id: "fr-CH-ArianeNeural", name: "Ariane (Suisse)", gender: "Femme", tag: "Calme / Réfléchie / Scientifique" },
+];
+
 export interface CharacterAppearance {
   height: string;
   build: string;
@@ -17,9 +42,16 @@ export interface Character {
   name: string;
   role: string;
   age: number;
+  voiceId: string; // Identifiant de la voix neuronale attribuée
   appearance: CharacterAppearance;
   visualPrompt: string; // Prompt ultra-détaillé en anglais pour générer le portrait officiel de référence (First Frame / Ingredient)
   imageUrl?: string;
+}
+
+export interface DialogueLine {
+  speaker: string; // Nom du personnage ou "Narrateur"
+  characterId?: string;
+  text: string; // Réplique parlée
 }
 
 export interface Scene {
@@ -28,12 +60,14 @@ export interface Scene {
   duration: number; // 8 secondes standard
   setting: string;
   charactersInvolved: string[];
-  voiceOver: string; // Narration captivante en français adaptée au ton du genre
+  voiceOver: string; // Narration globale ou dialogue complet
+  dialogues?: DialogueLine[]; // Répliques découpées par personnage
   visualPrompt: string; // Prompt vidéo cinématique ultra-réaliste 8s pour Google Flow / Gemini Omni Flash
   cameraStyle: string;
   emotion: string;
   imageUrl?: string;
   videoUrl?: string;
+  audioUrl?: string;
 }
 
 export interface ContentPlan {
@@ -57,57 +91,78 @@ export async function generateContent(
 
     const systemPrompt = `
       Tu es NeuroDirector PRO, réalisateur et showrunner IA d'élite capable de diriger TOUS les genres cinématographiques :
-      - Science-Fiction & Afrofuturisme (vaisseaux, cités cyberpunk, hologrammes, néons, technologies d'avant-garde)
-      - Action & Thriller (courses-poursuites, filatures, braquages, combats tactiques, espionnage)
-      - Drames Humains & Leçons de vie (destins croisés, ascensions, rivalités familiales, choix difficiles)
-      - Mystère & Enquête (policier noir, énigmes, révélations, suspense psychologique)
-      - Comédie & Satire (situations absurdes, quiproquos rythmés, comédie de moeurs)
-      - Épopée Historique & Fantastique (guerriers, royaumes anciens, légendes, mythologie)
-      - Documentaire & Biopic immersif (tech, business, grands créateurs).
+      - Science-Fiction & Afrofuturisme (cyberpunk, vaisseaux, néons, technologies d'avant-garde)
+      - Action & Thriller (poursuites, espionnage, combats tactiques, braquages)
+      - Drames Humains & Moraux (leçons de vie, rivalités, destins croisés, épreuves)
+      - Mystère & Enquête (policier noir, suspense psychologique, secrets)
+      - Comédie & Satire (quiproquos, dialogues mordants, situations absurdes)
+      - Épopée & Légende (royaumes anciens, guerriers, mythologie).
 
       Tu adaptes la mise en scène, l'ambiance lumineuse et le cadrage au genre demandé : "${genre}".
       Le format de diffusion est : ${format === "16:9" ? "16:9 (Cinéma / YouTube)" : "9:16 (TikTok / Reels / Shorts)"}.
 
       RÈGLES D'OR DE PRODUCTION POUR GOOGLE FLOW (FORMAT 1M30 MAX) :
-      1. LE CASTING (2 à 3 personnages clés de l'univers) :
-         - Pour chaque personnage, définis une IDENTITÉ VISUELLE STRICTE (âge précis, taille exacte, silhouette, carnation/teint "dark black skin", coupe de cheveux/barbe ou traits particuliers, tenue vestimentaire complète méticuleusement décrite avec matières, couleurs et accessoires adaptés au genre).
-         - "visualPrompt" : Prompt en anglais pour générer son portrait officiel de référence 8K (Ultra-realistic 8k studio character reference portrait, sharp facial details, matching genre lighting, photorealistic, neutral background).
+      1. LE CASTING VOCAL & VISUEL (2 à 3 personnages clés) :
+         - Pour chaque personnage, définis une IDENTITÉ VISUELLE STRICTE (âge précis, taille exacte, silhouette, carnation/teint "dark black skin", coupe de cheveux/barbe, tenue vestimentaire complète méticuleusement décrite de la tête aux pieds).
+         - ATTRIBUTION VOCALE OBLIGATOIRE ET DIVERSIFIÉE : Choisis IMPÉRATIVEMENT une voix DISTINCTE et PARFAITEMENT ADAPTÉE pour chaque personnage parmi le catalogue :
+           * "fr-FR-HenriNeural" : Homme mature, grave, vieux sage, narrateur, directeur
+           * "fr-FR-RemyMultilingualNeural" : Homme jeune, dynamique, héros, stagiaire, livreur
+           * "fr-BE-GerardNeural" : Homme posé, autoritaire, sage
+           * "fr-CA-AntoineNeural" : Homme jeune adulte, naturel, décontracté
+           * "fr-CA-JeanNeural" : Homme profond, dramatique, sérieux
+           * "fr-CH-FabriceNeural" : Homme distingué, policier, scientifique
+           * "fr-FR-DeniseNeural" : Femme adulte, affirmée, directrice, cadre
+           * "fr-FR-EloiseNeural" : Jeune femme, fille, soignante, voix douce ou émue
+           * "fr-FR-VivienneMultilingualNeural" : Femme d'action, expressive, tendue
+           * "fr-BE-CharlineNeural" : Femme vive, pétillante, jeune
+           * "fr-CA-SylvieNeural" : Femme mature, maternelle, chaleureuse
+           * "fr-CH-ArianeNeural" : Femme calme, posée, docteure
+         ⚠️ RÈGLE ABSOLUE : Attribue TOUJOURS une voix différente à chaque personnage présent pour que l'auditeur distingue immédiatement qui parle !
+         - "visualPrompt" : Prompt en anglais pour générer son portrait officiel de référence 8K (First Frame / Ingredient Flow).
 
-      2. LES SCÈNES SÉQUENTIELLES POUR 1M30 (EXACTEMENT 11 À 12 SCÈNES DE 8 SECONDES = 88 À 96 SECONDES TOTAL) :
-         - Tu DOIS IMPÉRATIVEMENT générer entre 11 et 12 scènes de 8 secondes chacune ("duration": 8). C'est la durée obligatoire pour atteindre 1 minute 30 au montage final.
-         - Structure le film sur cette courbe dramatique complète de 1m30 :
-           * Scènes 1 et 2 (00s - 16s) : L'ACCROCHE (The Hook) - Situation de tension, d'urgence ou d'injustice immédiate.
-           * Scènes 3 à 5 (16s - 40s) : LA TENSION & L'OBSTACLE - Rejet, confrontation, escalade du problème.
-           * Scènes 6 à 8 (40s - 64s) : L'ACTION DÉCISIVE & LE CHOIX - Sacrifice, courage, geste héroïque secret.
-           * Scènes 9 et 10 (64s - 80s) : LE PLOT TWIST & LA RÉVÉLATION - Retournement de situation choc.
-           * Scènes 11 et 12 (80s - 92s) : LE CLIMAX ÉMOTIONNEL & CONCLUSION - Réconciliation, reconnaissance, symbole fort.
-         - Raccord de montage (Cut-on-action) : Chaque scène N+1 commence obligatoirement là où la scène N s'est arrêtée (continuité immédiate du mouvement).
-         - "voiceOver" : Narration captivante en français, stylisée selon le genre, rythmée et synchronisée pour 8 secondes.
-         - "visualPrompt" : DOIT OBLIGATOIREMENT commencer par la formule d'or de Google Flow :
-           "Ultra-realistic cinematic video, 8 seconds. [Lieu et ambiance stylisée du genre]. [Description physique et vestimentaire intégrale répétée mot pour mot des personnages présents pour cohérence absolue]. [Action précise dans la continuité de la scène précédente, micro-expressions réalistes, interactions naturelles - strictly no looking at camera]. [Arrière-plan dynamique et vivant]. [Mouvements de caméra cinématographiques : handheld tracking shot, drone shot, fast tracking, slow dolly-in, over-the-shoulder]. Cinematic lighting, shallow depth of field, 4K ultra detail, natural motion."
-         - Continuité absolue : Les personnages gardent STRICTEMENT les mêmes vêtements, coiffures et accessoires d'une scène à l'autre.
+      2. LES SCÈNES SÉQUENTIELLES POUR 1M30 (EXACTEMENT 11 À 12 SCÈNES DE 8 SECONDES = ~1M30 TOTAL) :
+         - Tu DOIS IMPÉRATIVEMENT générer entre 11 et 12 scènes de 8 secondes ("duration": 8).
+         - VRAIS DIALOGUES & RÉPLIQUES :
+           * Les personnages DOIVENT SE PARLER ! Si deux personnages sont présents, inclus des dialogues vifs et naturels.
+           * "dialogues" : Tableau de répliques identifiées par personnage (1 à 3 répliques par scène de 8s).
+             Exemple :
+             [
+               { "speaker": "Kofi", "characterId": "char_1", "text": "Monsieur, laissez-moi régler vos frais d'urgence." },
+               { "speaker": "Le Vieil Homme", "characterId": "char_2", "text": "Mon fils, je n'oublierai jamais ton geste..." }
+             ]
+           * "voiceOver" : La version continue du dialogue ou de la narration pour la scène.
+         - Structure le film en 5 actes continus :
+           * Scènes 1-2 (00s-16s) : L'Accroche / The Hook (urgence, problème, dialogue d'ouverture)
+           * Scènes 3-5 (16s-40s) : L'Escalade & La Tension (affrontement, refus, dilemme)
+           * Scènes 6-8 (40s-64s) : L'Action Décisive & Le Sacrifice (acte de courage, secret)
+           * Scènes 9-10 (64s-80s) : Le Plot Twist & Révélation (identité découverte, choc)
+           * Scènes 11-12 (80s-92s) : Le Climax Émotionnel & Résolution (clôture forte, émotion)
+         - Raccord de montage (Cut-on-action) : La scène N+1 commence exactement là où la scène N s'est achevée.
+         - "visualPrompt" : DOIT OBLIGATOIREMENT commencer par :
+           "Ultra-realistic cinematic video, 8 seconds. [Lieu et ambiance]. [Description physique et vestimentaire intégrale répétée des personnages présents]. [Action précise dans la continuité de la scène précédente, micro-expressions réalistes des dialogues, aucun regard caméra]. [Arrière-plan actif et naturel]. [Mouvements de caméra : tracking shot, medium shot, over-the-shoulder]. Cinematic lighting, shallow depth of field, 4K ultra detail, natural motion."
 
       Réponds UNIQUEMENT avec un objet JSON valide structuré comme ceci :
       {
-        "title": "Titre percutant du film",
+        "title": "Titre du film",
         "genre": "${genre}",
-        "tone": "Tonalité (ex: Cyberpunk intense / Action effrénée / Drame poignant)",
+        "tone": "Tonalité (ex: Intense / Épique / Touchant)",
         "logline": "Le pitch en 1 phrase forte",
-        "synopsis": "Court résumé en 2-3 phrases de l'intrigue",
+        "synopsis": "Résumé en 2-3 phrases",
         "characters": [
           {
             "id": "char_1",
-            "name": "Nom du personnage",
-            "role": "Rôle dans l'intrigue",
-            "age": 25,
+            "name": "Kofi",
+            "role": "Jeune stagiaire dévoué",
+            "age": 22,
+            "voiceId": "fr-FR-RemyMultilingualNeural",
             "appearance": {
-              "height": "1m80",
-              "build": "athletic build",
+              "height": "1m75",
+              "build": "slim-athletic build",
               "skinTone": "dark black skin",
-              "hairBeard": "short fade, sharp line-up",
-              "outfit": "fitted black cybernetic bomber jacket, dark cargo pants, tactical boots"
+              "hairBeard": "short neatly trimmed black hair, clean-shaven",
+              "outfit": "light-blue long-sleeve shirt, black tie, black trousers, black shoes"
             },
-            "visualPrompt": "Ultra-realistic 8k studio character portrait of a 25-year-old African man, dark black skin, 1m80 tall, athletic build, wearing a fitted black cybernetic bomber jacket, photorealistic, sharp focus, cinematic lighting, 8K."
+            "visualPrompt": "Ultra-realistic 8k studio character portrait of a 22-year-old African man, dark black skin, 1m75 tall, athletic build, wearing a light-blue long-sleeve shirt, black tie, black trousers, photorealistic, sharp focus, cinematic lighting, 8K."
           }
         ],
         "scenes": [
@@ -115,12 +170,15 @@ export async function generateContent(
             "id": 1,
             "title": "Titre de la scène",
             "duration": 8,
-            "setting": "Description du décor",
+            "setting": "Inside a modern luxury bank",
             "charactersInvolved": ["char_1"],
-            "voiceOver": "Narration en français...",
+            "dialogues": [
+              { "speaker": "Kofi", "characterId": "char_1", "text": "Bonjour monsieur, puis-je faire quelque chose pour vous aider ?" }
+            ],
+            "voiceOver": "Kofi : Bonjour monsieur, puis-je faire quelque chose pour vous aider ?",
             "visualPrompt": "Ultra-realistic cinematic video, 8 seconds...",
-            "cameraStyle": "Dynamic handheld tracking shot, shallow depth of field, 4K",
-            "emotion": "Adrenaline and tension"
+            "cameraStyle": "Medium shot with slow push-in, shallow depth of field, 4K",
+            "emotion": "Concern and empathy"
           }
         ]
       }
@@ -177,6 +235,141 @@ export async function generateContent(
 }
 
 /**
+ * Synthèse audio multi-voix pour une scène :
+ * Fait parler chaque personnage avec sa propre voix neuronale attribuée et fusionne le dialogue.
+ */
+export async function generateSceneAudio(
+  scene: { voiceOver: string; dialogues?: DialogueLine[] },
+  characters: Character[] = [],
+  defaultVoice: string = "fr-FR-HenriNeural"
+) {
+  try {
+    const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
+
+    const getVoiceForSpeaker = (speakerName: string, charId?: string): string => {
+      if (charId) {
+        const found = characters.find((c) => c.id === charId);
+        if (found?.voiceId) return found.voiceId;
+      }
+      const foundByName = characters.find(
+        (c) => c.name.toLowerCase().includes(speakerName.toLowerCase()) || speakerName.toLowerCase().includes(c.name.toLowerCase())
+      );
+      if (foundByName?.voiceId) return foundByName.voiceId;
+      return defaultVoice;
+    };
+
+    // Cas 1 : La scène comporte des répliques découpées
+    if (scene.dialogues && scene.dialogues.length > 0) {
+      const audioBuffers: Buffer[] = [];
+
+      for (const line of scene.dialogues) {
+        const text = line.text.replace(/["«»]/g, "").trim();
+        if (!text) continue;
+
+        if (audioBuffers.length > 0) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        const voiceToUse = getVoiceForSpeaker(line.speaker, line.characterId);
+        const tts = new MsEdgeTTS();
+        await tts.setMetadata(voiceToUse, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
+        const { audioStream } = tts.toStream(text);
+        const chunks: Buffer[] = [];
+
+        await new Promise<void>((resolve, reject) => {
+          audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+          audioStream.on("end", () => resolve());
+          audioStream.on("error", (err: Error) => reject(err));
+        });
+
+        if (chunks.length > 0) {
+          audioBuffers.push(Buffer.concat(chunks));
+        }
+      }
+
+      if (audioBuffers.length > 0) {
+        const mergedBuffer = Buffer.concat(audioBuffers);
+        const base64Audio = mergedBuffer.toString("base64");
+        const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
+
+        try {
+          if (process.env.CLOUDINARY_CLOUD_NAME) {
+            const uploadResponse = await cloudinary.uploader.upload(dataUri, {
+              resource_type: "video",
+              folder: "neuro-studio-audios",
+            });
+            return { success: true, url: uploadResponse.secure_url };
+          }
+        } catch {
+          // repli dataUri
+        }
+
+        return { success: true, url: dataUri };
+      }
+    }
+
+    // Cas 2 : Repli sur le texte brut de voiceOver
+    return generateVoiceAudio(scene.voiceOver, defaultVoice);
+  } catch (error: unknown) {
+    console.error("Erreur génération dialogue multi-voix :", error);
+    const message = error instanceof Error ? error.message : "ECHEC_AUDIO_SCENE";
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Synthèse vocale unitaire (pour un seul texte avec une voix précise)
+ */
+export async function generateVoiceAudio(
+  text: string, 
+  voice: string = "fr-FR-HenriNeural"
+) {
+  try {
+    const cleanText = text.replace(/["«»]/g, "").trim();
+    if (!cleanText) return { success: false, error: "TEXTE_VIDE" };
+
+    const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    
+    const { audioStream } = tts.toStream(cleanText);
+    const chunks: Buffer[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      audioStream.on("end", () => resolve());
+      audioStream.on("error", (err: Error) => reject(err));
+    });
+
+    const buffer = Buffer.concat(chunks);
+    const base64Audio = buffer.toString("base64");
+    const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
+
+    try {
+      if (process.env.CLOUDINARY_CLOUD_NAME) {
+        const uploadResponse = await cloudinary.uploader.upload(dataUri, {
+          resource_type: "video",
+          folder: "neuro-studio-audios",
+        });
+        return { success: true, url: uploadResponse.secure_url };
+      }
+    } catch {
+      // repli gracieux
+    }
+
+    return { success: true, url: dataUri };
+  } catch (error: unknown) {
+    console.error("Erreur Edge TTS :", error);
+    const message = error instanceof Error ? error.message : "ECHEC_VOIX_GRATUITE";
+    return { success: false, error: message };
+  }
+}
+
+// Rétrocompatibilité
+export const getElevenLabsAudio = generateVoiceAudio;
+
+/**
  * Génération de l'image de référence officielle d'un personnage (1 par 1)
  */
 export async function generateCharacterImage(prompt: string) {
@@ -230,82 +423,6 @@ export async function generateImage(prompt: string, ratio: "16:9" | "9:16" = "16
     return { success: false, error: message };
   }
 }
-
-/**
- * Synthèse vocale IA : Moteur Edge TTS 100% Gratuit & Illimité (Voix Neuronales Françaises)
- * Supporte Henri (Homme, narrateur grave et épique) et Denise (Femme, captivante).
- * Repli sur ElevenLabs si configuré et demandé.
- */
-export async function generateVoiceAudio(
-  text: string, 
-  voice: "fr-FR-HenriNeural" | "fr-FR-DeniseNeural" | "fr-FR-RemyMultilingualNeural" = "fr-FR-HenriNeural"
-) {
-  try {
-    const cleanText = text.replace(/["«»]/g, "").trim();
-    if (!cleanText) return { success: false, error: "TEXTE_VIDE" };
-
-    const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
-    const tts = new MsEdgeTTS();
-    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-    
-    const { audioStream } = tts.toStream(cleanText);
-    const chunks: Buffer[] = [];
-
-    await new Promise<void>((resolve, reject) => {
-      audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
-      audioStream.on("end", () => resolve());
-      audioStream.on("error", (err: Error) => reject(err));
-    });
-
-    const buffer = Buffer.concat(chunks);
-    const base64Audio = buffer.toString("base64");
-    const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
-
-    try {
-      if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const uploadResponse = await cloudinary.uploader.upload(dataUri, {
-          resource_type: "video",
-          folder: "neuro-studio-audios",
-        });
-        return { success: true, url: uploadResponse.secure_url };
-      }
-    } catch {
-      // repli sur le data URI autonome
-    }
-
-    return { success: true, url: dataUri };
-  } catch (error: unknown) {
-    console.error("Erreur Edge TTS :", error);
-    // Repli ElevenLabs si la clé existe
-    const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-    if (apiKey) {
-      try {
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/pNInz6OB85MvRmPLz5QN`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "xi-api-key": apiKey },
-          body: JSON.stringify({
-            text,
-            model_id: "eleven_multilingual_v2",
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 },
-          }),
-        });
-        if (response.ok) {
-          const buffer = await response.arrayBuffer();
-          const base64Audio = Buffer.from(buffer).toString("base64");
-          return { success: true, url: `data:audio/mpeg;base64,${base64Audio}` };
-        }
-      } catch {
-        // échec repli
-      }
-    }
-
-    const message = error instanceof Error ? error.message : "ECHEC_VOIX_GRATUITE";
-    return { success: false, error: message };
-  }
-}
-
-// Rétrocompatibilité
-export const getElevenLabsAudio = generateVoiceAudio;
 
 export async function saveProject(topic: string, plan: ContentPlan) {
   try {
