@@ -102,6 +102,19 @@ export default function Home() {
 
   useEffect(() => {
     getQuota().then(setQuota);
+    const savedPlan = localStorage.getItem("neuro_current_plan");
+    if (savedPlan) {
+      try {
+        const parsed = JSON.parse(savedPlan);
+        setPlan(parsed);
+        const savedTopic = localStorage.getItem("neuro_current_topic");
+        if (savedTopic) setTopic(savedTopic);
+        localStorage.removeItem("neuro_current_plan");
+        localStorage.removeItem("neuro_current_topic");
+      } catch (e) {
+        console.error("Erreur de chargement du plan archivé :", e);
+      }
+    }
   }, []);
 
   const handleGenerate = async (customTopic?: string, customGenre?: string) => {

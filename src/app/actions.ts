@@ -450,6 +450,16 @@ export async function getProjects() {
   }
 }
 
+export async function deleteProject(id: number) {
+  try {
+    await sql`DELETE FROM projects WHERE id = ${id}`;
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "ECHEC_DELETE";
+    return { success: false, error: message };
+  }
+}
+
 export async function getQuota() {
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
