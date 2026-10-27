@@ -128,7 +128,17 @@ export default function Home() {
     setError("");
     setPlan(null);
     try {
-      const result = await generateContent(promptToUse, genreToUse, globalRatio);
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: promptToUse,
+          genre: genreToUse,
+          format: globalRatio,
+        }),
+      });
+
+      const result = await response.json();
       if (result.success && result.data) {
         setPlan(result.data);
         setActiveTab("characters");
@@ -136,7 +146,17 @@ export default function Home() {
         setError(result.error || "ERREUR_GENERATION_IA");
       }
     } catch {
-      setError("ERREUR_CONNEXION_SERVEUR");
+      try {
+        const fallbackResult = await generateContent(promptToUse, genreToUse, globalRatio);
+        if (fallbackResult.success && fallbackResult.data) {
+          setPlan(fallbackResult.data);
+          setActiveTab("characters");
+        } else {
+          setError(fallbackResult.error || "ERREUR_GENERATION_IA");
+        }
+      } catch {
+        setError("ERREUR_CONNEXION_SERVEUR : Impossible de contacter l'API de génération.");
+      }
     } finally {
       setIsGenerating(false);
     }

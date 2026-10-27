@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: '**', // À restreindre plus tard pour la sécurité
+        hostname: '**',
       },
     ],
   },

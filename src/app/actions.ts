@@ -11,8 +11,6 @@ import type {
   ContentPlan
 } from "@/lib/types";
 
-export type { Character, DialogueLine, Scene, ContentPlan };
-
 export async function generateContent(
   topic: string, 
   genre: string = "Libre / Tous Genres", 
