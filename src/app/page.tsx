@@ -36,18 +36,21 @@ import Link from "next/link";
 import clsx from "clsx";
 import { 
   generateContent, 
-  ContentPlan, 
-  Character, 
-  Scene, 
   saveProject, 
   getElevenLabsAudio, 
   getQuota, 
   generateCharacterImage, 
   generateImage,
   generateSceneAudio,
-  generateVoiceAudio,
-  AVAILABLE_VOICES
+  generateVoiceAudio
 } from "./actions";
+import { 
+  AVAILABLE_VOICES,
+  type ContentPlan, 
+  type Character, 
+  type Scene,
+  type VoiceOption
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 

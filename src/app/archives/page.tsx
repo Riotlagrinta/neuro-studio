@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getProjects, deleteProject, ContentPlan } from "../actions";
+import { getProjects, deleteProject } from "../actions";
+import type { ContentPlan } from "@/lib/types";
 import { 
   Sparkles, 
   ChevronLeft, 
