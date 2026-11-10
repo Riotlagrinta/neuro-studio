@@ -2,12 +2,10 @@
 
 import { groq } from "@/lib/groq-client";
 import { sql } from "@/lib/db";
-import cloudinary from "@/lib/cloudinary";
 
 import type {
   Character,
   DialogueLine,
-  Scene,
   ContentPlan
 } from "@/lib/types";
 
@@ -119,9 +117,6 @@ export async function generateContent(
       "openai/gpt-oss-120b",
       "qwen/qwen3.8-27b",
       "openai/gpt-oss-20b",
-      "llama-3.3-70b-versatile",
-      "llama-3.1-70b-versatile",
-      "llama-3.1-8b-instant",
     ];
 
     let content: string | null = null;
@@ -223,19 +218,6 @@ export async function generateSceneAudio(
         const mergedBuffer = Buffer.concat(audioBuffers);
         const base64Audio = mergedBuffer.toString("base64");
         const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
-
-        try {
-          if (process.env.CLOUDINARY_CLOUD_NAME) {
-            const uploadResponse = await cloudinary.uploader.upload(dataUri, {
-              resource_type: "video",
-              folder: "neuro-studio-audios",
-            });
-            return { success: true, url: uploadResponse.secure_url };
-          }
-        } catch {
-          // repli dataUri
-        }
-
         return { success: true, url: dataUri };
       }
     }
@@ -261,7 +243,7 @@ export async function generateVoiceAudio(
     if (!cleanText) return { success: false, error: "TEXTE_VIDE" };
 
     const { MsEdgeTTS, OUTPUT_FORMAT } = await import("msedge-tts");
-    const tts = new MsEdgeTTS();
+    const tts = new MsEdgeTTS({ connectionTimeoutMs: 3000 });
     await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
     
     const { audioStream } = tts.toStream(cleanText);
@@ -277,18 +259,6 @@ export async function generateVoiceAudio(
     const base64Audio = buffer.toString("base64");
     const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
 
-    try {
-      if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const uploadResponse = await cloudinary.uploader.upload(dataUri, {
-          resource_type: "video",
-          folder: "neuro-studio-audios",
-        });
-        return { success: true, url: uploadResponse.secure_url };
-      }
-    } catch {
-      // repli gracieux
-    }
-
     return { success: true, url: dataUri };
   } catch (error: unknown) {
     console.error("Erreur Edge TTS :", error);
@@ -303,58 +273,24 @@ export async function getElevenLabsAudio(text: string, voice?: string) {
 }
 
 /**
- * Génération de l'image de référence officielle d'un personnage (1 par 1)
+ * Mode Studio Flow : La génération directe de photos et vidéos est déportée
+ * vers Google Flow / Midjourney via les prompts optimisés générés par l'IA.
  */
 export async function generateCharacterImage(prompt: string) {
-  try {
-    const cleanPrompt = prompt.replace(/\s+/g, " ").trim();
-    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt.slice(0, 500))}?nologo=true&width=1024&height=1024&seed=${Math.floor(Math.random() * 99999)}&model=flux`;
-    
-    try {
-      if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const uploadResponse = await cloudinary.uploader.upload(fallbackUrl, {
-          folder: "neuro-studio-characters",
-        });
-        return { success: true, url: uploadResponse.secure_url };
-      }
-    } catch {
-      // repli gracieux
-    }
-
-    return { success: true, url: fallbackUrl };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "ECHEC_IMAGE_PERSONNAGE";
-    return { success: false, error: message };
-  }
+  return { 
+    success: false, 
+    error: "MODE_PROMPT_FLOW : Copiez le prompt portrait et collez-le dans Google Flow ou Midjourney.",
+    prompt 
+  };
 }
 
-/**
- * Génération de l'image clé d'une scène (First Frame pour Google Flow)
- */
 export async function generateImage(prompt: string, ratio: "16:9" | "9:16" = "16:9") {
-  try {
-    const width = ratio === "16:9" ? 1280 : 720;
-    const height = ratio === "16:9" ? 720 : 1280;
-    const cleanPrompt = prompt.replace(/\s+/g, " ").trim();
-
-    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt.slice(0, 500))}?nologo=true&width=${width}&height=${height}&seed=${Math.floor(Math.random() * 99999)}&model=flux`;
-    
-    try {
-      if (process.env.CLOUDINARY_CLOUD_NAME) {
-        const uploadResponse = await cloudinary.uploader.upload(fallbackUrl, {
-          folder: "neuro-studio-scenes",
-        });
-        return { success: true, url: uploadResponse.secure_url };
-      }
-    } catch {
-      // repli gracieux
-    }
-
-    return { success: true, url: fallbackUrl };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "ECHEC_IMAGE_SCENE";
-    return { success: false, error: message };
-  }
+  return { 
+    success: false, 
+    error: "MODE_PROMPT_FLOW : Copiez le prompt vidéo et collez-le dans Google Flow ou Sora.",
+    prompt,
+    ratio 
+  };
 }
 
 export async function saveProject(topic: string, plan: ContentPlan) {

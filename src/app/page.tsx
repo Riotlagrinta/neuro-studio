@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { 
   Loader2, 
   Play, 
+  Square,
+  Volume2,
   Sparkles, 
   Clapperboard, 
   Save,
@@ -12,14 +14,12 @@ import {
   History,
   Copy,
   Check,
-  Download,
   Smartphone,
   Monitor,
   Users,
   Film,
   ExternalLink,
   ArrowRight,
-  Camera,
   Zap,
   Rocket,
   Search,
@@ -37,19 +37,17 @@ import clsx from "clsx";
 import { 
   generateContent, 
   saveProject, 
-  getElevenLabsAudio, 
-  getQuota, 
-  generateCharacterImage, 
-  generateImage,
-  generateSceneAudio,
   generateVoiceAudio
 } from "./actions";
+import { 
+  speakSingleLine, 
+  playSceneDialogues 
+} from "@/lib/speech";
 import { 
   AVAILABLE_VOICES,
   type ContentPlan, 
   type Character, 
-  type Scene,
-  type VoiceOption
+  type Scene
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -99,12 +97,10 @@ export default function Home() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [plan, setPlan] = useState<ContentPlan | null>(null);
   const [error, setError] = useState("");
-  const [quota, setQuota] = useState<{remaining: number, total: number} | null>(null);
   const [globalRatio, setGlobalRatio] = useState<AspectRatio>("16:9");
   const [activeTab, setActiveTab] = useState<ActiveTab>("characters");
 
   useEffect(() => {
-    getQuota().then(setQuota);
     const savedPlan = localStorage.getItem("neuro_current_plan");
     if (savedPlan) {
       try {
@@ -548,7 +544,7 @@ export default function Home() {
                   </div>
                   <div>
                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block mb-1">
-                      Synopsis de l'Intrigue
+                      Synopsis de l&apos;Intrigue
                     </span>
                     <p className="text-zinc-300 leading-relaxed">{plan.synopsis}</p>
                   </div>
@@ -593,7 +589,7 @@ export default function Home() {
                     <div className="flex items-center gap-2.5">
                       <Sparkles className="w-4 h-4 text-indigo-400 flex-shrink-0" />
                       <span>
-                        <strong>Règle d'or Flow :</strong> Générez l'image de chaque personnage une par une. Téléchargez-la et injectez-la comme <em>Ingredient</em> dans Google Flow pour figer son apparence sur toutes vos scènes.
+                        <strong>Mode Showrunner Google Flow :</strong> Copiez le prompt 8K de chaque personnage, créez votre image de référence (Midjourney / Flow), puis injectez-la comme <em>Ingredient</em> pour figer l&apos;identité sur l&apos;ensemble de vos scènes.
                       </span>
                     </div>
                   </div>
@@ -657,7 +653,7 @@ export default function Home() {
 }
 
 // ---------------------------------------------------------------------------
-// Composant Carte Personnage (Génération 1 par 1)
+// Composant Carte Personnage (Casting & Ingrédient Google Flow)
 // ---------------------------------------------------------------------------
 function CharacterCard({ 
   character, 
@@ -668,37 +664,35 @@ function CharacterCard({
   index: number; 
   onUpdate: (updates: Partial<Character>) => void;
 }) {
-  const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
 
-  const handleGeneratePortrait = async () => {
-    setIsGenerating(true);
-    try {
-      const result = await generateCharacterImage(character.visualPrompt);
-      if (result.success && result.url) {
-        onUpdate({ imageUrl: result.url });
+  const handlePreviewVoice = () => {
+    if (isPlayingVoice) {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
       }
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handlePreviewVoice = async () => {
-    setIsPlayingVoice(true);
-    try {
-      const voiceToUse = character.voiceId || "fr-FR-HenriNeural";
-      const sampleText = `Bonjour, je suis la voix de ${character.name}.`;
-      const result = await generateVoiceAudio(sampleText, voiceToUse);
-      if (result.success && result.url) {
-        const audio = new Audio(result.url);
-        audio.onended = () => setIsPlayingVoice(false);
-        audio.play();
-      } else {
-        setIsPlayingVoice(false);
-      }
-    } catch {
       setIsPlayingVoice(false);
+      return;
+    }
+
+    setIsPlayingVoice(true);
+    const voiceToUse = character.voiceId || "fr-FR-HenriNeural";
+    const sampleText = `Bonjour, je suis la voix de ${character.name}. Prêt pour la direction.`;
+    const played = speakSingleLine(sampleText, voiceToUse, () => setIsPlayingVoice(false));
+    if (!played) {
+      generateVoiceAudio(sampleText, voiceToUse)
+        .then((res) => {
+          if (res.success && res.url) {
+            const audio = new Audio(res.url);
+            audio.onended = () => setIsPlayingVoice(false);
+            audio.play();
+          } else {
+            setIsPlayingVoice(false);
+          }
+        })
+        .catch(() => setIsPlayingVoice(false));
     }
   };
 
@@ -708,72 +702,79 @@ function CharacterCard({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const downloadImage = async (url: string) => {
-    try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `${character.name.toLowerCase().replace(/[^a-z0-9]/g, "-")}-ref.webp`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(blobUrl);
-    } catch {
-      alert("Erreur de téléchargement");
-    }
-  };
+  const initialLetters = character.name
+    ? character.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
+    : "ID";
 
   return (
-    <div className="bg-[#0b0d13] border border-white/[0.08] hover:border-indigo-500/40 rounded-2xl p-5 flex flex-col justify-between transition-all group">
+    <div className="bg-[#0b0d13] border border-white/[0.08] hover:border-indigo-500/40 rounded-2xl p-5 flex flex-col justify-between transition-all group shadow-sm">
       <div className="space-y-4">
         
-        {/* Slot Photo / Image de référence */}
-        <div className="relative aspect-square w-full rounded-xl bg-white/[0.02] border border-white/[0.06] overflow-hidden flex items-center justify-center">
+        {/* Slot Visuel / Badge Ingrédient Casting */}
+        <div className="relative aspect-video w-full rounded-xl bg-gradient-to-br from-indigo-950/25 via-[#0c0e14] to-zinc-900 border border-white/[0.08] overflow-hidden flex flex-col items-center justify-center p-4 text-center">
           {character.imageUrl ? (
-            <img 
-              src={character.imageUrl} 
-              alt={character.name} 
-              className="w-full h-full object-cover rounded-xl group-hover:scale-105 transition-transform duration-500"
-            />
-          ) : (
-            <div className="text-center p-6 space-y-3">
-              <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mx-auto text-zinc-500">
-                <Users className="w-6 h-6" />
-              </div>
-              <p className="text-xs text-zinc-500">Aucune image de référence</p>
+            <div className="relative w-full h-full">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img 
+                src={character.imageUrl} 
+                alt={character.name} 
+                className="w-full h-full object-cover rounded-lg"
+              />
+              <button
+                onClick={() => onUpdate({ imageUrl: undefined })}
+                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/70 hover:bg-red-500/80 text-white backdrop-blur-md transition-all text-xs"
+                title="Retirer l'image"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             </div>
-          )}
-
-          {character.imageUrl && (
-            <button
-              onClick={() => downloadImage(character.imageUrl!)}
-              className="absolute top-3 right-3 p-2 rounded-lg bg-black/70 hover:bg-black text-white backdrop-blur-md border border-white/20 transition-all shadow-lg"
-              title="Télécharger l'image de référence"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-          )}
-
-          {isGenerating && (
-            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-2 text-indigo-400">
-              <Loader2 className="w-8 h-8 animate-spin" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">Génération Portrait...</span>
+          ) : (
+            <div className="space-y-2">
+              <div className="w-12 h-12 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center mx-auto text-indigo-300 font-extrabold text-base tracking-wider shadow-inner">
+                {initialLetters}
+              </div>
+              <div>
+                <p className="text-xs font-bold text-white tracking-wide">{character.name}</p>
+                <p className="text-[10px] text-zinc-400">{character.role}</p>
+              </div>
+              <button
+                onClick={() => setShowUrlInput(!showUrlInput)}
+                className="text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors block mx-auto"
+              >
+                {showUrlInput ? "Fermer" : "+ Lier une image de réf (URL)"}
+              </button>
             </div>
           )}
         </div>
 
+        {showUrlInput && !character.imageUrl && (
+          <div className="flex gap-2">
+            <input
+              type="url"
+              placeholder="https://... (URL image)"
+              className="flex-1 bg-black/60 border border-white/[0.1] rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 outline-none focus:border-indigo-500"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const val = (e.target as HTMLInputElement).value.trim();
+                  if (val) {
+                    onUpdate({ imageUrl: val });
+                    setShowUrlInput(false);
+                  }
+                }
+              }}
+            />
+          </div>
+        )}
+
         {/* Détails du personnage */}
-        <div className="space-y-2">
+        <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-extrabold uppercase tracking-widest text-indigo-400 px-2 py-0.5 bg-indigo-500/10 rounded">
               Personnage 0{index + 1}
             </span>
             <span className="text-xs text-zinc-400 font-medium">{character.age} ans</span>
           </div>
-          <h3 className="text-lg font-bold text-white tracking-tight">{character.name}</h3>
-          <p className="text-xs text-zinc-400">{character.role}</p>
+          <h3 className="text-base font-bold text-white tracking-tight">{character.name}</h3>
         </div>
 
         {/* Fiche d'identité stricte */}
@@ -792,12 +793,20 @@ function CharacterCard({
             </label>
             <button
               onClick={handlePreviewVoice}
-              disabled={isPlayingVoice}
               className="text-[10px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
-              title="Écouter un échantillon de cette voix"
+              title="Tester la voix"
             >
-              {isPlayingVoice ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3 fill-current" />}
-              <span>{isPlayingVoice ? "Écoute..." : "Tester la voix"}</span>
+              {isPlayingVoice ? (
+                <>
+                  <Square className="w-3 h-3 fill-current text-indigo-400" />
+                  <span className="text-indigo-400 font-bold">Stop</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3 fill-current" />
+                  <span>Tester voix</span>
+                </>
+              )}
             </button>
           </div>
           <select
@@ -813,37 +822,33 @@ function CharacterCard({
           </select>
         </div>
 
-        {/* Prompt visuel en anglais */}
+        {/* Prompt visuel en anglais (Ingrédient Flow) */}
         <div className="space-y-1.5">
-          <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block">
-            Prompt Portrait Réf (Google Flow)
+          <label className="text-[9px] font-bold text-amber-400 uppercase tracking-widest block flex items-center gap-1">
+            <Sparkles className="w-3 h-3" />
+            <span>Prompt Ingrédient 8K (Google Flow / Midjourney)</span>
           </label>
           <textarea
             value={character.visualPrompt}
             onChange={(e) => onUpdate({ visualPrompt: e.target.value })}
-            className="w-full bg-black/50 border border-white/[0.08] rounded-xl p-2.5 text-xs text-zinc-300 font-mono outline-none focus:border-indigo-500/50 min-h-[70px] resize-none"
+            className="w-full bg-black/50 border border-amber-500/20 focus:border-amber-500/50 rounded-xl p-2.5 text-xs text-zinc-300 font-mono outline-none min-h-[75px] resize-none"
           />
         </div>
       </div>
 
-      {/* Actions 1 par 1 */}
-      <div className="pt-4 flex gap-2">
-        <button
-          onClick={handleGeneratePortrait}
-          disabled={isGenerating}
-          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-all shadow-md shadow-indigo-600/20"
-        >
-          {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
-          <span>{character.imageUrl ? "Régénérer" : "Générer Portrait"}</span>
-        </button>
-
+      {/* Action Pro : Copier le Prompt Ingrédient */}
+      <div className="pt-4">
         <button
           onClick={copyPrompt}
-          className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-zinc-200 text-xs font-semibold border border-white/[0.1] transition-all"
-          title="Copier le prompt du portrait"
+          className={clsx(
+            "w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-md",
+            copied 
+              ? "bg-emerald-600 text-white shadow-emerald-600/30" 
+              : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20 hover:scale-[1.01]"
+          )}
         >
-          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-          <span>{copied ? "Copié !" : "Copier"}</span>
+          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+          <span>{copied ? "Prompt Ingrédient Copié !" : "Copier le Prompt Ingrédient"}</span>
         </button>
       </div>
     </div>
@@ -856,7 +861,6 @@ function CharacterCard({
 function SceneRowCard({ 
   scene, 
   index, 
-  ratio, 
   characters,
   onUpdate,
   onDelete
@@ -870,9 +874,8 @@ function SceneRowCard({
 }) {
   const [copiedFlow, setCopiedFlow] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [loadingAudio, setLoadingAudio] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null);
+  const stopSpeechRef = useRef<(() => void) | null>(null);
 
   const copyFlowPrompt = () => {
     navigator.clipboard.writeText(scene.visualPrompt);
@@ -880,33 +883,29 @@ function SceneRowCard({
     setTimeout(() => setCopiedFlow(false), 2000);
   };
 
-  const playVoice = async () => {
-    if (isPlaying) return;
-    setLoadingAudio(true);
-    try {
-      const result = await generateSceneAudio(scene, characters);
-      if (result.success && result.url) {
-        setAudioUrl(result.url);
-        onUpdate({ audioUrl: result.url });
-        const audio = new Audio(result.url);
-        audio.onended = () => setIsPlaying(false);
-        setIsPlaying(true);
-        audio.play();
-      }
-    } finally { 
-      setLoadingAudio(false); 
+  const togglePlayDialogues = () => {
+    if (isPlaying) {
+      stopSpeechRef.current?.();
+      setIsPlaying(false);
+      setActiveLineIndex(null);
+      return;
     }
-  };
 
-  const handleGenerateSceneFrame = async () => {
-    setIsGeneratingImage(true);
-    try {
-      const result = await generateImage(scene.visualPrompt, ratio);
-      if (result.success && result.url) {
-        onUpdate({ imageUrl: result.url });
-      }
-    } finally {
-      setIsGeneratingImage(false);
+    if (scene.dialogues && scene.dialogues.length > 0) {
+      setIsPlaying(true);
+      stopSpeechRef.current = playSceneDialogues(
+        scene.dialogues,
+        characters,
+        (lineIdx) => setActiveLineIndex(lineIdx),
+        () => {
+          setIsPlaying(false);
+          setActiveLineIndex(null);
+        }
+      );
+    } else if (scene.voiceOver) {
+      setIsPlaying(true);
+      const ok = speakSingleLine(scene.voiceOver, "fr-FR-HenriNeural", () => setIsPlaying(false));
+      if (!ok) setIsPlaying(false);
     }
   };
 
@@ -967,35 +966,35 @@ function SceneRowCard({
                 <Mic className="w-3.5 h-3.5 text-indigo-400" />
                 <span>Dialogues & Répliques (8s)</span>
               </label>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={playVoice}
-                  disabled={loadingAudio}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-xs text-indigo-300 hover:text-white font-medium transition-colors border border-indigo-500/30 shadow-sm"
-                >
-                  {loadingAudio ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                  <span>{isPlaying ? "Lecture en cours..." : "Générer les Voix (Multi-Acteurs)"}</span>
-                </button>
-                {audioUrl && (
-                  <a
-                    href={audioUrl}
-                    download={`scene-${index + 1}-dialogues.mp3`}
-                    className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.08]"
-                    title="Télécharger l'audio complet de la scène"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                  </a>
+              <button
+                onClick={togglePlayDialogues}
+                className={clsx(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border shadow-sm",
+                  isPlaying
+                    ? "bg-amber-500/20 text-amber-300 border-amber-500/30 animate-pulse"
+                    : "bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 hover:text-white border-indigo-500/30"
                 )}
-              </div>
+                title="Écouter le dialogue avec Web Speech"
+              >
+                {isPlaying ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                <span>{isPlaying ? "Arrêter la lecture" : "Écouter la Scène (Multi-Voix)"}</span>
+              </button>
             </div>
 
-            {/* Affichage des répliques détaillées par personnage si disponibles */}
+            {/* Affichage des répliques détaillées par personnage avec surlignage dynamique */}
             {scene.dialogues && scene.dialogues.length > 0 ? (
               <div className="space-y-2 bg-black/40 border border-white/[0.08] rounded-xl p-3.5">
                 {scene.dialogues.map((dlg, dIdx) => (
-                  <div key={dIdx} className="text-xs space-y-0.5 border-b border-white/[0.04] last:border-b-0 pb-2 last:pb-0">
-                    <span className="font-bold text-indigo-400 uppercase tracking-wider text-[10px]">
-                      {dlg.speaker} :
+                  <div 
+                    key={dIdx} 
+                    className={clsx(
+                      "text-xs space-y-0.5 border-b border-white/[0.04] last:border-b-0 pb-2 last:pb-0 rounded-lg p-1.5 transition-colors",
+                      activeLineIndex === dIdx ? "bg-indigo-500/10 border border-indigo-500/30" : ""
+                    )}
+                  >
+                    <span className="font-bold text-indigo-400 uppercase tracking-wider text-[10px] flex items-center gap-1.5">
+                      {activeLineIndex === dIdx && <Volume2 className="w-3 h-3 text-indigo-400 animate-pulse" />}
+                      <span>{dlg.speaker} :</span>
                     </span>
                     <p className="text-zinc-200 italic font-medium leading-relaxed">« {dlg.text} »</p>
                   </div>
@@ -1020,7 +1019,7 @@ function SceneRowCard({
           </div>
         </div>
 
-        {/* Prompt Vidéo Flow & First Frame */}
+        {/* Prompt Vidéo Flow */}
         <div className="space-y-4">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
@@ -1029,41 +1028,26 @@ function SceneRowCard({
                 <span>Prompt Vidéo Google Flow (Anglais)</span>
               </label>
               <button
-                onClick={handleGenerateSceneFrame}
-                disabled={isGeneratingImage}
-                className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white font-medium transition-colors"
+                onClick={copyFlowPrompt}
+                className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors"
+                title="Copier ce prompt"
               >
-                {isGeneratingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
-                <span>{scene.imageUrl ? "Régénérer First Frame" : "Générer First Frame"}</span>
+                {copiedFlow ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedFlow ? "Copié !" : "Copier"}</span>
               </button>
             </div>
             <textarea
               value={scene.visualPrompt}
               onChange={(e) => onUpdate({ visualPrompt: e.target.value })}
-              className="w-full bg-black/60 border border-amber-500/20 focus:border-amber-500/50 rounded-xl p-3.5 text-xs font-mono text-zinc-300 outline-none min-h-[110px] leading-relaxed"
+              className="w-full bg-black/60 border border-amber-500/20 focus:border-amber-500/50 rounded-xl p-3.5 text-xs font-mono text-zinc-300 outline-none min-h-[120px] leading-relaxed"
             />
           </div>
 
-          {scene.imageUrl && (
-            <div className="flex items-center gap-3 p-2 bg-white/[0.02] border border-white/[0.06] rounded-xl">
-              <img 
-                src={scene.imageUrl} 
-                alt="Scene frame" 
-                className="w-16 h-12 object-cover rounded-lg border border-white/10"
-              />
-              <span className="text-xs text-zinc-400 flex-1">Image clé (First Frame)</span>
-              <a
-                href={scene.imageUrl}
-                target="_blank"
-                rel="noreferrer"
-                download
-                className="p-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-zinc-300 transition-colors"
-                title="Ouvrir l'image"
-              >
-                <Download className="w-4 h-4" />
-              </a>
-            </div>
-          )}
+          <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] text-[11px] text-zinc-400">
+            <p>
+              💡 <strong>Conseil Réalisation :</strong> Collez ce prompt dans Google Flow avec les images de vos personnages en <em>Ingredients</em> pour garantir la continuité des visages et des costumes.
+            </p>
+          </div>
         </div>
 
       </div>
