@@ -33,7 +33,10 @@ import {
   Scissors,
   Upload,
   Pause,
-  Download
+  Download,
+  Key,
+  FileText,
+  Wand2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -41,8 +44,14 @@ import clsx from "clsx";
 import { 
   generateContent, 
   saveProject, 
-  generateVoiceAudio
+  generateVoiceAudio,
+  refineScene,
+  generateElevenLabsAudioWithKey,
+  generateNanoBananaImageWithKey,
+  generateGrokVideoWithKey
 } from "./actions";
+import { SettingsModal } from "@/components/settings-modal";
+import { BulkPromptsModal } from "@/components/bulk-prompts-modal";
 import { 
   speakSingleLine, 
   playSceneDialogues 
@@ -52,7 +61,8 @@ import {
   AVAILABLE_VOICES,
   type ContentPlan, 
   type Character, 
-  type Scene
+  type Scene,
+  type UserApiKeys
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -104,6 +114,10 @@ export default function Home() {
   const [error, setError] = useState("");
   const [globalRatio, setGlobalRatio] = useState<AspectRatio>("16:9");
   const [activeTab, setActiveTab] = useState<ActiveTab>("characters");
+  const [userKeys, setUserKeys] = useState<UserApiKeys>({});
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [preferredEngine, setPreferredEngine] = useState<"groq" | "chatgpt">("groq");
 
   useEffect(() => {
     const savedPlan = localStorage.getItem("neuro_current_plan");
@@ -119,7 +133,30 @@ export default function Home() {
         console.error("Erreur de chargement du plan archivé :", e);
       }
     }
+
+    const savedKeys = localStorage.getItem("neuro_user_api_keys");
+    if (savedKeys) {
+      try {
+        const parsed = JSON.parse(savedKeys);
+        setUserKeys(parsed);
+        if (parsed.openaiApiKey) {
+          setPreferredEngine("chatgpt");
+        }
+      } catch (e) {
+        console.error("Erreur de chargement des clés API :", e);
+      }
+    }
   }, []);
+
+  const handleSaveUserKeys = (newKeys: UserApiKeys) => {
+    setUserKeys(newKeys);
+    localStorage.setItem("neuro_user_api_keys", JSON.stringify(newKeys));
+    if (newKeys.openaiApiKey && !userKeys.openaiApiKey) {
+      setPreferredEngine("chatgpt");
+    }
+  };
+
+  const activeKeysCount = Object.values(userKeys).filter((v) => Boolean(v?.trim())).length;
 
   const handleGenerate = async (customTopic?: string, customGenre?: string) => {
     const promptToUse = (customTopic || topic).trim();
@@ -129,6 +166,7 @@ export default function Home() {
     setError("");
     setPlan(null);
     try {
+      const activeOpenAiKey = preferredEngine === "chatgpt" ? userKeys.openaiApiKey : undefined;
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,6 +174,7 @@ export default function Home() {
           topic: promptToUse,
           genre: genreToUse,
           format: globalRatio,
+          userOpenAiKey: activeOpenAiKey,
         }),
       });
 
@@ -148,7 +187,13 @@ export default function Home() {
       }
     } catch {
       try {
-        const fallbackResult = await generateContent(promptToUse, genreToUse, globalRatio);
+        const activeOpenAiKey = preferredEngine === "chatgpt" ? userKeys.openaiApiKey : undefined;
+        const fallbackResult = await generateContent(
+          promptToUse, 
+          genreToUse, 
+          globalRatio,
+          activeOpenAiKey
+        );
         if (fallbackResult.success && fallbackResult.data) {
           setPlan(fallbackResult.data);
           setActiveTab("characters");
@@ -344,6 +389,22 @@ export default function Home() {
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
 
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.1] text-xs font-semibold text-zinc-300 hover:text-white transition-all hover:scale-[1.02]"
+            title="Paramètres & Clés API (BYOK)"
+          >
+            <Key className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Clés API</span>
+            {activeKeysCount > 0 ? (
+              <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
+                {activeKeysCount}
+              </span>
+            ) : (
+              <span className="text-[10px] text-zinc-500 hidden md:inline">BYOK</span>
+            )}
+          </button>
+
           <Link href="/archives" className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors">
             <History className="w-4 h-4" />
             <span className="hidden md:inline text-xs font-medium">Archives</span>
@@ -396,7 +457,48 @@ export default function Home() {
             </div>
 
             {/* Input Pitch */}
-            <div className="bg-[#0b0d13] border border-white/[0.12] p-2.5 rounded-2xl shadow-2xl shadow-indigo-950/20 focus-within:border-indigo-500/60 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-2">
+                <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                  Moteur Scénario & Prompts :
+                </span>
+                <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => setPreferredEngine("groq")}
+                    className={clsx(
+                      "px-2.5 py-1 rounded-md text-[10px] font-bold transition-all",
+                      preferredEngine === "groq"
+                        ? "bg-indigo-600 text-white shadow-sm"
+                        : "text-zinc-400 hover:text-white"
+                    )}
+                  >
+                    ⚡ Groq (Gratuit & Rapide)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!userKeys.openaiApiKey?.trim()) {
+                        setShowSettingsModal(true);
+                      } else {
+                        setPreferredEngine("chatgpt");
+                      }
+                    }}
+                    className={clsx(
+                      "px-2.5 py-1 rounded-md text-[10px] font-bold transition-all flex items-center gap-1",
+                      preferredEngine === "chatgpt" && userKeys.openaiApiKey?.trim()
+                        ? "bg-emerald-600 text-white shadow-sm"
+                        : "text-zinc-400 hover:text-white"
+                    )}
+                  >
+                    {userKeys.openaiApiKey?.trim() ? <Check className="w-3 h-3 text-emerald-300" /> : <Key className="w-3 h-3 text-amber-400" />}
+                    <span>ChatGPT GPT-4o {userKeys.openaiApiKey?.trim() ? "(Actif)" : "(Clé requise)"}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-[#0b0d13] border border-white/[0.12] p-2.5 rounded-2xl shadow-2xl shadow-indigo-950/20 focus-within:border-indigo-500/60 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all">
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <input
                   type="text"
@@ -415,6 +517,7 @@ export default function Home() {
                   <span>Créer le Film</span>
                 </button>
               </div>
+            </div>
             </div>
 
             {/* Suggestions Multi-Genres */}
@@ -520,6 +623,14 @@ export default function Home() {
                     </a>
 
                     <button 
+                      onClick={() => setShowBulkModal(true)} 
+                      className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500/20 to-amber-600/20 hover:from-amber-500/30 text-amber-300 rounded-xl border border-amber-500/40 transition-all text-xs font-bold uppercase tracking-wider shadow-sm"
+                    >
+                      <FileText className="w-4 h-4 text-amber-400" />
+                      <span>Bulk Flow Prompts</span>
+                    </button>
+
+                    <button 
                       onClick={handleSave} 
                       disabled={isSaving} 
                       className="flex items-center gap-2 px-4 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] text-white rounded-xl border border-white/[0.1] transition-all text-xs font-semibold"
@@ -619,7 +730,9 @@ export default function Home() {
                         key={character.id || idx} 
                         character={character} 
                         index={idx}
+                        userKeys={userKeys}
                         onUpdate={(updates) => updateCharacter(idx, updates)}
+                        onOpenSettings={() => setShowSettingsModal(true)}
                       />
                     ))}
                   </div>
@@ -629,13 +742,20 @@ export default function Home() {
               {/* CONTENU ONGLET 2 : DÉCOUPAGE SCÈNES 8s */}
               {activeTab === "scenes" && (
                 <div className="space-y-8">
-                  <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center justify-between">
+                  <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2.5">
                       <Film className="w-4 h-4 text-amber-400 flex-shrink-0" />
                       <span>
                         Chaque scène est calibrée à <strong>8 secondes</strong> avec des mouvements de caméra et des descriptions physiques répétées adaptées au genre ({plan.genre}).
                       </span>
                     </div>
+                    <button
+                      onClick={() => setShowBulkModal(true)}
+                      className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all hover:scale-[1.02] whitespace-nowrap"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>Exporter les Prompts (Bulk Flow)</span>
+                    </button>
                   </div>
 
                   <div className="space-y-6">
@@ -646,8 +766,12 @@ export default function Home() {
                         index={idx} 
                         ratio={globalRatio}
                         characters={plan.characters}
+                        userKeys={userKeys}
+                        planContext={{ title: plan.title, genre: plan.genre }}
+                        preferredEngine={preferredEngine}
                         onUpdate={(updates) => updateScene(idx, updates)}
                         onDelete={plan.scenes.length > 1 ? () => handleDeleteScene(idx) : undefined}
+                        onOpenSettings={() => setShowSettingsModal(true)}
                       />
                     ))}
 
@@ -676,6 +800,24 @@ export default function Home() {
           )}
         </AnimatePresence>
 
+        {/* Modal Clés API (BYOK) */}
+        <SettingsModal
+          isOpen={showSettingsModal}
+          onClose={() => setShowSettingsModal(false)}
+          userKeys={userKeys}
+          onSaveKeys={handleSaveUserKeys}
+        />
+
+        {/* Modal Exportation Groupée des Prompts (Bulk Flow) */}
+        {plan && (
+          <BulkPromptsModal
+            isOpen={showBulkModal}
+            onClose={() => setShowBulkModal(false)}
+            plan={plan}
+            format={globalRatio}
+          />
+        )}
+
       </main>
     </div>
   );
@@ -687,15 +829,22 @@ export default function Home() {
 function CharacterCard({ 
   character, 
   index, 
-  onUpdate 
+  userKeys,
+  onUpdate,
+  onOpenSettings
 }: { 
   character: Character; 
   index: number; 
+  userKeys?: UserApiKeys;
   onUpdate: (updates: Partial<Character>) => void;
+  onOpenSettings?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [isPlayingVoice, setIsPlayingVoice] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [isGeneratingEleven, setIsGeneratingEleven] = useState(false);
 
   const handlePreviewVoice = () => {
     if (isPlayingVoice) {
@@ -722,6 +871,48 @@ function CharacterCard({
           }
         })
         .catch(() => setIsPlayingVoice(false));
+    }
+  };
+
+  const handleElevenLabsVoice = async () => {
+    if (!userKeys?.elevenLabsApiKey?.trim()) {
+      onOpenSettings?.();
+      return;
+    }
+    setIsGeneratingEleven(true);
+    try {
+      const sampleText = `Bonjour, je suis la voix officielle de ${character.name} en haute fidélité.`;
+      const res = await generateElevenLabsAudioWithKey(sampleText, character.voiceId, userKeys.elevenLabsApiKey);
+      if (res.success && res.url) {
+        const audio = new Audio(res.url);
+        audio.play();
+      }
+    } catch (e) {
+      console.error("Erreur ElevenLabs :", e);
+    } finally {
+      setIsGeneratingEleven(false);
+    }
+  };
+
+  const handleGenerateNanoBanana = async () => {
+    if (!userKeys?.nanoBananaApiKey?.trim()) {
+      onOpenSettings?.();
+      return;
+    }
+    setIsGeneratingImage(true);
+    setImageError("");
+    try {
+      const res = await generateNanoBananaImageWithKey(character.visualPrompt, userKeys.nanoBananaApiKey);
+      if (res.success && res.url) {
+        onUpdate({ imageUrl: res.url });
+      } else {
+        setImageError(res.error || "Échec génération image");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Erreur image";
+      setImageError(msg);
+    } finally {
+      setIsGeneratingImage(false);
     }
   };
 
@@ -766,15 +957,29 @@ function CharacterCard({
                 <p className="text-xs font-bold text-white tracking-wide">{character.name}</p>
                 <p className="text-[10px] text-zinc-400">{character.role}</p>
               </div>
-              <button
-                onClick={() => setShowUrlInput(!showUrlInput)}
-                className="text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors block mx-auto"
-              >
-                {showUrlInput ? "Fermer" : "+ Lier une image de réf (URL)"}
-              </button>
+              <div className="flex items-center gap-3 justify-center">
+                <button
+                  onClick={() => setShowUrlInput(!showUrlInput)}
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors block"
+                >
+                  {showUrlInput ? "Fermer" : "+ Lier URL"}
+                </button>
+                <button
+                  onClick={handleGenerateNanoBanana}
+                  disabled={isGeneratingImage}
+                  className="text-[10px] text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors font-medium flex items-center gap-1"
+                >
+                  {isGeneratingImage ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
+                  <span>Générer (Nano Banana)</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
+
+        {imageError && (
+          <p className="text-[10px] text-red-400 bg-red-500/10 p-2 rounded-lg border border-red-500/20">{imageError}</p>
+        )}
 
         {showUrlInput && !character.imageUrl && (
           <div className="flex gap-2">
@@ -820,23 +1025,34 @@ function CharacterCard({
               <Mic className="w-3 h-3" />
               <span>Voix du Personnage</span>
             </label>
-            <button
-              onClick={handlePreviewVoice}
-              className="text-[10px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
-              title="Tester la voix"
-            >
-              {isPlayingVoice ? (
-                <>
-                  <Square className="w-3 h-3 fill-current text-indigo-400" />
-                  <span className="text-indigo-400 font-bold">Stop</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3 h-3 fill-current" />
-                  <span>Tester voix</span>
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handlePreviewVoice}
+                className="text-[10px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
+                title="Tester la voix avec Web Speech"
+              >
+                {isPlayingVoice ? (
+                  <>
+                    <Square className="w-3 h-3 fill-current text-indigo-400" />
+                    <span className="text-indigo-400 font-bold">Stop</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3 h-3 fill-current" />
+                    <span>Tester</span>
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleElevenLabsVoice}
+                disabled={isGeneratingEleven}
+                className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
+                title="Tester avec ElevenLabs"
+              >
+                {isGeneratingEleven ? <Loader2 className="w-3 h-3 animate-spin" /> : <Volume2 className="w-3 h-3" />}
+                <span>ElevenLabs</span>
+              </button>
+            </div>
           </div>
           <select
             value={character.voiceId || "fr-FR-HenriNeural"}
@@ -866,18 +1082,18 @@ function CharacterCard({
       </div>
 
       {/* Action Pro : Copier le Prompt Ingrédient */}
-      <div className="pt-4">
+      <div className="pt-4 flex gap-2">
         <button
           onClick={copyPrompt}
           className={clsx(
-            "w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-md",
+            "flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-md",
             copied 
               ? "bg-emerald-600 text-white shadow-emerald-600/30" 
               : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20 hover:scale-[1.01]"
           )}
         >
           {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-          <span>{copied ? "Prompt Ingrédient Copié !" : "Copier le Prompt Ingrédient"}</span>
+          <span>{copied ? "Prompt Copié !" : "Copier le Prompt"}</span>
         </button>
       </div>
     </div>
@@ -890,26 +1106,90 @@ function CharacterCard({
 function SceneRowCard({ 
   scene, 
   index, 
+  ratio,
   characters,
+  userKeys,
+  planContext,
+  preferredEngine,
   onUpdate,
-  onDelete
+  onDelete,
+  onOpenSettings
 }: { 
   scene: Scene; 
   index: number; 
   ratio: AspectRatio; 
   characters: Character[];
+  userKeys: UserApiKeys;
+  planContext: { title: string; genre: string };
+  preferredEngine?: "groq" | "chatgpt";
   onUpdate: (updates: Partial<Scene>) => void;
   onDelete?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const [copiedFlow, setCopiedFlow] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null);
+  const [showRefine, setShowRefine] = useState(false);
+  const [refineInstruction, setRefineInstruction] = useState("");
+  const [isRefining, setIsRefining] = useState(false);
+  const [refineError, setRefineError] = useState("");
+  const [isGeneratingGrok, setIsGeneratingGrok] = useState(false);
+  const [grokError, setGrokError] = useState("");
   const stopSpeechRef = useRef<(() => void) | null>(null);
 
   const copyFlowPrompt = () => {
     navigator.clipboard.writeText(scene.visualPrompt);
     setCopiedFlow(true);
     setTimeout(() => setCopiedFlow(false), 2000);
+  };
+
+  const handleRefine = async () => {
+    if (!refineInstruction.trim()) return;
+    setIsRefining(true);
+    setRefineError("");
+    try {
+      const activeKey = preferredEngine === "chatgpt" ? userKeys.openaiApiKey : undefined;
+      const res = await refineScene(
+        scene, 
+        refineInstruction.trim(), 
+        planContext, 
+        activeKey
+      );
+      if (res.success && res.scene) {
+        onUpdate(res.scene);
+        setRefineInstruction("");
+        setShowRefine(false);
+      } else {
+        setRefineError(res.error || "Erreur lors de la réécriture.");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erreur inconnue";
+      setRefineError(msg);
+    } finally {
+      setIsRefining(false);
+    }
+  };
+
+  const handleGenerateGrokVideo = async () => {
+    if (!userKeys.grokApiKey?.trim()) {
+      onOpenSettings?.();
+      return;
+    }
+    setIsGeneratingGrok(true);
+    setGrokError("");
+    try {
+      const res = await generateGrokVideoWithKey(scene.visualPrompt, userKeys.grokApiKey, ratio);
+      if (res.success && res.url) {
+        onUpdate({ videoUrl: res.url });
+      } else {
+        setGrokError(res.error || "Échec génération xAI Grok Video");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erreur Grok";
+      setGrokError(msg);
+    } finally {
+      setIsGeneratingGrok(false);
+    }
   };
 
   const togglePlayDialogues = () => {
@@ -953,30 +1233,66 @@ function SceneRowCard({
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 uppercase tracking-widest">
                 08s Flow
               </span>
+              {scene.videoUrl && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
+                  <Check className="w-3 h-3" /> Vidéo Prête
+                </span>
+              )}
             </div>
             <p className="text-xs text-zinc-500">{scene.setting}</p>
           </div>
         </div>
 
         {/* Boutons d'action */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Bouton Affiner avec l'IA */}
+          <button
+            onClick={() => setShowRefine(!showRefine)}
+            className={clsx(
+              "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all border",
+              showRefine
+                ? "bg-indigo-600 text-white border-indigo-500"
+                : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08]"
+            )}
+            title="Modifier cette scène avec un prompt réalisateur"
+          >
+            <Wand2 className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Affiner avec l&apos;IA</span>
+          </button>
+
+          {/* Bouton Générer Vidéo avec Grok */}
+          <button
+            onClick={handleGenerateGrokVideo}
+            disabled={isGeneratingGrok}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 hover:text-white border border-violet-500/30 transition-all hover:scale-[1.02]"
+            title={userKeys.grokApiKey ? "Générer la vidéo 8s directement avec Grok" : "Configurer la clé xAI Grok"}
+          >
+            {isGeneratingGrok ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+            )}
+            <span>{isGeneratingGrok ? "Grok 8s en cours..." : "Générer Vidéo (Grok)"}</span>
+          </button>
+
+          {/* Bouton Copier le Prompt Flow */}
           <button
             onClick={copyFlowPrompt}
             className={clsx(
-              "flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-lg",
+              "flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-lg",
               copiedFlow 
                 ? "bg-emerald-600 text-white shadow-emerald-600/30" 
                 : "bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-600/25 hover:scale-[1.02]"
             )}
           >
             {copiedFlow ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
-            <span>{copiedFlow ? "Copié pour Google Flow !" : "Copier le Prompt Flow"}</span>
+            <span>{copiedFlow ? "Copié !" : "Copier Prompt Flow"}</span>
           </button>
 
           {onDelete && (
             <button
               onClick={onDelete}
-              className="p-2.5 rounded-xl bg-white/[0.04] hover:bg-red-500/20 text-zinc-500 hover:text-red-400 border border-white/[0.06] transition-colors"
+              className="p-2 rounded-xl bg-white/[0.04] hover:bg-red-500/20 text-zinc-500 hover:text-red-400 border border-white/[0.06] transition-colors"
               title="Supprimer cette scène"
             >
               <Trash2 className="w-4 h-4" />
@@ -984,6 +1300,65 @@ function SceneRowCard({
           )}
         </div>
       </div>
+
+      {/* Zone Interactive d'Affinage par Prompt IA */}
+      {showRefine && (
+        <div className="p-4 rounded-2xl bg-indigo-950/30 border border-indigo-500/30 space-y-3 animate-in fade-in duration-200">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+              <Wand2 className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Consigne Réalisateur ({preferredEngine === "chatgpt" && userKeys.openaiApiKey ? "ChatGPT GPT-4o" : "Groq"}) :</span>
+            </span>
+            <button 
+              onClick={() => setShowRefine(false)}
+              className="text-[11px] text-zinc-500 hover:text-white"
+            >
+              Fermer
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={refineInstruction}
+              onChange={(e) => setRefineInstruction(e.target.value)}
+              placeholder="Ex: Ajoute de la pluie battante nocturne, fais monter la colère de Malik et termine par un gros plan caméra..."
+              className="flex-1 bg-black/60 border border-white/[0.12] rounded-xl px-4 py-2.5 text-xs text-zinc-200 outline-none focus:border-indigo-500"
+              onKeyDown={(e) => e.key === "Enter" && handleRefine()}
+            />
+            <button
+              onClick={handleRefine}
+              disabled={isRefining || !refineInstruction.trim()}
+              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-indigo-600/30"
+            >
+              {isRefining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+              <span>{isRefining ? "Réécriture..." : "Appliquer la Retouche"}</span>
+            </button>
+          </div>
+          {refineError && (
+            <p className="text-xs text-red-400 bg-red-500/10 p-2.5 rounded-xl border border-red-500/20">
+              {refineError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Alerte Erreur Grok */}
+      {grokError && (
+        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center justify-between">
+          <span>{grokError}</span>
+          <button onClick={() => setGrokError("")} className="text-zinc-500 hover:text-white text-xs">✕</button>
+        </div>
+      )}
+
+      {/* Aperçu Vidéo Grok si déjà générée */}
+      {scene.videoUrl && (
+        <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 bg-black aspect-video max-w-md shadow-lg">
+          <video src={scene.videoUrl} controls className="w-full h-full object-cover" />
+          <div className="absolute top-2 left-2 px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+            Vidéo Grok 8s prête pour Montage
+          </div>
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         

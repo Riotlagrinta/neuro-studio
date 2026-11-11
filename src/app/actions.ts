@@ -6,17 +6,21 @@ import { sql } from "@/lib/db";
 import type {
   Character,
   DialogueLine,
+  Scene,
   ContentPlan
 } from "@/lib/types";
 
 export async function generateContent(
   topic: string, 
   genre: string = "Libre / Tous Genres", 
-  format: "16:9" | "9:16" = "16:9"
+  format: "16:9" | "9:16" = "16:9",
+  userOpenAiKey?: string
 ) {
   try {
-    const apiKey = process.env.GROQ_API_KEY?.trim();
-    if (!apiKey) return { success: false, error: "CLÉ_GROQ_MANQUANTE" };
+    const hasGroqKey = Boolean(process.env.GROQ_API_KEY?.trim());
+    if (!hasGroqKey && !userOpenAiKey?.trim()) {
+      return { success: false, error: "CLÉ_MANQUANTE : Fournissez une clé ChatGPT dans Paramètres ou configurez GROQ_API_KEY." };
+    }
 
     const systemPrompt = `
       Tu es NeuroDirector PRO, réalisateur et showrunner IA d'élite capable de diriger TOUS les genres cinématographiques :
@@ -122,26 +126,57 @@ export async function generateContent(
     let content: string | null = null;
     let lastError: Error | null = null;
 
-    for (const model of fallbackModels) {
+    if (userOpenAiKey?.trim()) {
       try {
-        const completion = await groq.chat.completions.create({
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Sujet / Idée de film [Genre: ${genre}] : ${topic}` },
-          ],
-          model,
-          temperature: 0.7,
-          max_tokens: 8000,
-          response_format: { type: "json_object" },
+        const openAiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${userOpenAiKey.trim()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Sujet / Idée de film [Genre: ${genre}] : ${topic}` },
+            ],
+            response_format: { type: "json_object" },
+          }),
         });
 
-        content = completion.choices[0]?.message?.content || null;
-        if (content) {
-          break;
+        const openAiData = await openAiRes.json();
+        if (!openAiRes.ok) {
+          throw new Error(openAiData.error?.message || "Erreur API ChatGPT (OpenAI)");
         }
+        content = openAiData.choices[0]?.message?.content || null;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        console.warn(`⚠️ Modèle Groq ${model} non disponible, basculement automatique...`);
+        console.warn("⚠️ Échec ChatGPT, basculement vers Groq...", lastError.message);
+      }
+    }
+
+    if (!content) {
+      for (const model of fallbackModels) {
+        try {
+          const completion = await groq.chat.completions.create({
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Sujet / Idée de film [Genre: ${genre}] : ${topic}` },
+            ],
+            model,
+            temperature: 0.7,
+            max_tokens: 8000,
+            response_format: { type: "json_object" },
+          });
+
+          content = completion.choices[0]?.message?.content || null;
+          if (content) {
+            break;
+          }
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.warn(`⚠️ Modèle Groq ${model} non disponible, basculement automatique...`);
+        }
       }
     }
 
@@ -291,6 +326,231 @@ export async function generateImage(prompt: string, ratio: "16:9" | "9:16" = "16
     prompt,
     ratio 
   };
+}
+
+/**
+ * Réécrit et affine une scène spécifique avec l'IA selon une consigne du réalisateur.
+ * Supporte Groq (par défaut) et ChatGPT (si clé OpenAI fournie).
+ */
+export async function refineScene(
+  scene: Scene,
+  instruction: string,
+  planContext: { title: string; genre: string },
+  userOpenAiKey?: string
+) {
+  try {
+    const prompt = `
+      Tu es NeuroDirector PRO, réalisateur et showrunner IA d'élite.
+      Tu dois modifier et réécrire la scène n°${scene.id} du film "${planContext.title}" (${planContext.genre}) selon cette instruction précise :
+      "${instruction}"
+
+      Voici la scène actuelle à modifier :
+      ${JSON.stringify(scene, null, 2)}
+
+      Règles strictes :
+      1. Durée impérative : 8 secondes ("duration": 8).
+      2. Conserve les identifiants de personnages existants.
+      3. Réadapte les dialogues, l'émotion, le décor ("setting"), le style de caméra et le prompt visuel 8K "visualPrompt" pour Google Flow.
+      4. Réponds UNIQUEMENT avec un objet JSON valide contenant les champs de la scène modifiée :
+      {
+        "id": ${scene.id},
+        "title": "Titre mis à jour",
+        "duration": 8,
+        "setting": "Description du lieu",
+        "charactersInvolved": ${JSON.stringify(scene.charactersInvolved || [])},
+        "dialogues": [
+          { "speaker": "Nom", "characterId": "char_id", "text": "Réplique..." }
+        ],
+        "voiceOver": "Texte voiceover",
+        "visualPrompt": "Ultra-realistic cinematic video, 8 seconds...",
+        "cameraStyle": "Cadrage et mouvement",
+        "emotion": "Ambiance et émotion"
+      }
+    `;
+
+    let content: string | null = null;
+
+    if (userOpenAiKey?.trim()) {
+      const openAiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${userOpenAiKey.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: prompt }],
+          response_format: { type: "json_object" },
+        }),
+      });
+
+      const openAiData = await openAiRes.json();
+      if (!openAiRes.ok) {
+        throw new Error(openAiData.error?.message || "Erreur API ChatGPT");
+      }
+      content = openAiData.choices[0]?.message?.content || null;
+    } else {
+      const completion = await groq.chat.completions.create({
+        messages: [{ role: "user", content: prompt }],
+        model: "openai/gpt-oss-120b",
+        temperature: 0.7,
+        response_format: { type: "json_object" },
+      });
+      content = completion.choices[0]?.message?.content || null;
+    }
+
+    if (!content) {
+      return { success: false, error: "L'IA n'a retourné aucune modification." };
+    }
+
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    const updated = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+    return { success: true, scene: { ...scene, ...updated, id: scene.id } };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erreur de retouche de scène";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Synthèse vocale HD directe via ElevenLabs (avec clé utilisateur BYOK ou serveur)
+ */
+export async function generateElevenLabsAudioWithKey(
+  text: string,
+  voiceId: string = "pNInz6OB85MvRmPLz5QN",
+  userApiKey?: string
+) {
+  try {
+    const key = userApiKey?.trim() || process.env.ELEVENLABS_API_KEY?.trim();
+    if (!key) {
+      return { success: false, error: "CLÉ_ELEVENLABS_MANQUANTE : Ajoutez votre clé dans les Paramètres." };
+    }
+
+    const cleanText = text.replace(/["«»]/g, "").trim();
+    if (!cleanText) return { success: false, error: "TEXTE_VIDE" };
+
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": key,
+      },
+      body: JSON.stringify({
+        text: cleanText,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.detail?.message || "Erreur de génération vocale ElevenLabs");
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const base64Audio = buffer.toString("base64");
+    return { success: true, url: `data:audio/mpeg;base64,${base64Audio}` };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erreur ElevenLabs";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Génération directe de portraits 8K via Nano Banana (Google Gemini Imagen API)
+ */
+export async function generateNanoBananaImageWithKey(
+  prompt: string,
+  userApiKey?: string
+) {
+  try {
+    const key = userApiKey?.trim();
+    if (!key) {
+      return { success: false, error: "CLÉ_NANO_BANANA_MANQUANTE : Renseignez votre clé Google AI Studio dans Paramètres." };
+    }
+
+    const cleanPrompt = prompt.replace(/\s+/g, " ").trim();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instances: [{ prompt: cleanPrompt }],
+        parameters: {
+          sampleCount: 1,
+          aspectRatio: "1:1",
+          outputMimeType: "image/jpeg",
+        },
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error?.message || "Erreur de génération Nano Banana / Imagen");
+    }
+
+    const base64Bytes = data.predictions?.[0]?.bytesBase64Encoded;
+    if (!base64Bytes) {
+      throw new Error("Aucune image retournée par l'API Nano Banana.");
+    }
+
+    return { success: true, url: `data:image/jpeg;base64,${base64Bytes}` };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erreur Nano Banana";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Génération vidéo directe via xAI Grok Imagine Video API
+ */
+export async function generateGrokVideoWithKey(
+  prompt: string,
+  userApiKey?: string,
+  ratio: "16:9" | "9:16" = "16:9"
+) {
+  try {
+    const key = userApiKey?.trim();
+    if (!key) {
+      return { success: false, error: "CLÉ_GROK_MANQUANTE : Renseignez votre clé xAI Grok dans Paramètres." };
+    }
+
+    const cleanPrompt = prompt.replace(/\s+/g, " ").trim();
+
+    const response = await fetch("https://api.x.ai/v1/videos/generations", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-imagine-video-1.5",
+        prompt: cleanPrompt,
+        aspect_ratio: ratio,
+        duration: 8,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error?.message || "Erreur API xAI Grok Imagine Video");
+    }
+
+    const videoUrl = data.video_url || data.url || data.output?.[0];
+    if (!videoUrl) {
+      return { success: false, error: "Le rendu Grok Video a démarré mais le lien direct est encore en calcul." };
+    }
+
+    return { success: true, url: videoUrl };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erreur Grok Video";
+    return { success: false, error: msg };
+  }
 }
 
 export async function saveProject(topic: string, plan: ContentPlan) {

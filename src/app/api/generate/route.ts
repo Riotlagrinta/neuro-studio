@@ -6,19 +6,19 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    const body = await req.json();
+    const { topic, genre, format, userOpenAiKey } = body;
+
     const apiKey = process.env.GROQ_API_KEY?.trim();
-    if (!apiKey) {
+    if (!apiKey && !userOpenAiKey?.trim()) {
       return NextResponse.json(
         { 
           success: false, 
-          error: "CLÉ_GROQ_MANQUANTE : Veuillez ajouter GROQ_API_KEY dans les variables d'environnement Vercel." 
+          error: "CLÉ_MANQUANTE : Configurez GROQ_API_KEY ou fournissez une clé ChatGPT dans Paramètres." 
         },
         { status: 400 }
       );
     }
-
-    const body = await req.json();
-    const { topic, genre, format } = body;
 
     if (!topic || typeof topic !== "string" || !topic.trim()) {
       return NextResponse.json(
@@ -27,7 +27,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await generateContent(topic.trim(), genre || "Libre / Tous Genres", format || "16:9");
+    const result = await generateContent(
+      topic.trim(), 
+      genre || "Libre / Tous Genres", 
+      format || "16:9",
+      userOpenAiKey?.trim()
+    );
 
     if (!result.success) {
       return NextResponse.json(

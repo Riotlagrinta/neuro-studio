@@ -75,3 +75,10 @@ export interface ContentPlan {
   characters: Character[];
   scenes: Scene[];
 }
+
+export interface UserApiKeys {
+  openaiApiKey?: string;
+  grokApiKey?: string;
+  nanoBananaApiKey?: string;
+  elevenLabsApiKey?: string;
+}
