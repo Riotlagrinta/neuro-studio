@@ -62,6 +62,8 @@ export interface Scene {
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
+  trimStart?: number;
+  trimEnd?: number;
 }
 
 export interface ContentPlan {

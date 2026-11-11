@@ -29,7 +29,11 @@ import {
   Clock,
   Plus,
   Trash2,
-  Mic
+  Mic,
+  Scissors,
+  Upload,
+  Pause,
+  Download
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -43,6 +47,7 @@ import {
   speakSingleLine, 
   playSceneDialogues 
 } from "@/lib/speech";
+import { renderMontageSequence } from "@/lib/video-assembler";
 import { 
   AVAILABLE_VOICES,
   type ContentPlan, 
@@ -53,7 +58,7 @@ import {
 export const dynamic = "force-dynamic";
 
 type AspectRatio = "16:9" | "9:16";
-type ActiveTab = "characters" | "scenes" | "overview";
+type ActiveTab = "characters" | "scenes" | "editor";
 
 const GENRES = [
   { id: "all", name: "Tous Genres", icon: Sparkles },
@@ -580,6 +585,20 @@ export default function Home() {
                     <motion.div layoutId="tabLine" className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500" />
                   )}
                 </button>
+
+                <button
+                  onClick={() => setActiveTab("editor")}
+                  className={clsx(
+                    "pb-3.5 text-sm font-bold flex items-center gap-2.5 transition-all relative",
+                    activeTab === "editor" ? "text-indigo-400" : "text-zinc-500 hover:text-zinc-300"
+                  )}
+                >
+                  <Clapperboard className="w-4 h-4 text-amber-400" />
+                  <span>3. Studio de Montage CapCut ({plan.scenes?.filter((s) => Boolean(s.videoUrl)).length || 0}/{plan.scenes?.length || 0})</span>
+                  {activeTab === "editor" && (
+                    <motion.div layoutId="tabLine" className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500" />
+                  )}
+                </button>
               </div>
 
               {/* CONTENU ONGLET 1 : LE CASTING */}
@@ -641,6 +660,16 @@ export default function Home() {
                     </button>
                   </div>
                 </div>
+              )}
+
+              {/* CONTENU ONGLET 3 : STUDIO DE MONTAGE & ASSEMBLAGE */}
+              {activeTab === "editor" && (
+                <MontageStudio
+                  plan={plan}
+                  format={globalRatio}
+                  onFormatChange={setGlobalRatio}
+                  onUpdateScene={updateScene}
+                />
               )}
 
             </motion.div>
@@ -1052,6 +1081,415 @@ function SceneRowCard({
 
       </div>
 
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Composant Studio de Montage & Assemblage Vidéo (Neuro-Assembler CapCut)
+// ---------------------------------------------------------------------------
+function MontageStudio({
+  plan,
+  format,
+  onFormatChange,
+  onUpdateScene
+}: {
+  plan: ContentPlan;
+  format: AspectRatio;
+  onFormatChange: (fmt: AspectRatio) => void;
+  onUpdateScene: (index: number, updates: Partial<Scene>) => void;
+}) {
+  const [activeSceneIndex, setActiveSceneIndex] = useState(0);
+  const [isPlayingSequence, setIsPlayingSequence] = useState(false);
+  const [burnSubtitles, setBurnSubtitles] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportError, setExportError] = useState("");
+  const [exportSuccessUrl, setExportSuccessUrl] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const scenes = plan.scenes || [];
+  const currentScene = scenes[activeSceneIndex] || scenes[0];
+  const uploadedClipsCount = scenes.filter((s) => Boolean(s.videoUrl)).length;
+
+  // Enchaînement automatique des scènes en prévisualisation
+  const handleVideoEnded = () => {
+    if (!isPlayingSequence) return;
+    if (activeSceneIndex < scenes.length - 1) {
+      setActiveSceneIndex((prev) => prev + 1);
+    } else {
+      setIsPlayingSequence(false);
+      setActiveSceneIndex(0);
+    }
+  };
+
+  useEffect(() => {
+    if (isPlayingSequence && videoRef.current && currentScene?.videoUrl) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [activeSceneIndex, isPlayingSequence, currentScene]);
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlayingSequence) {
+      videoRef.current.pause();
+      setIsPlayingSequence(false);
+    } else {
+      setIsPlayingSequence(true);
+      videoRef.current.play().catch(() => {});
+    }
+  };
+
+  const handleFileUpload = (index: number, file: File) => {
+    const url = URL.createObjectURL(file);
+    onUpdateScene(index, { videoUrl: url });
+    setActiveSceneIndex(index);
+  };
+
+  const handleExport = async () => {
+    if (uploadedClipsCount === 0) {
+      setExportError("Veuillez importer au moins un clip vidéo pour lancer l'assemblage.");
+      return;
+    }
+
+    setIsExporting(true);
+    setExportError("");
+    setExportProgress(0);
+    setExportSuccessUrl(null);
+
+    try {
+      const blob = await renderMontageSequence({
+        scenes,
+        format,
+        burnSubtitles,
+        onProgress: (pct) => setExportProgress(Math.round(pct)),
+      });
+
+      const downloadUrl = URL.createObjectURL(blob);
+      setExportSuccessUrl(downloadUrl);
+
+      // Téléchargement automatique local direct
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      const cleanTitle = (plan.title || "film").toLowerCase().replace(/[^a-z0-9]/g, "-");
+      a.download = `${cleanTitle}-${format.replace(":", "-")}-montage.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erreur lors du rendu du montage";
+      setExportError(msg);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const currentDialogue = currentScene?.dialogues?.[0];
+  const subtitleText = currentDialogue?.text || currentScene?.voiceOver;
+
+  return (
+    <div className="space-y-8">
+      {/* Bannière de présentation */}
+      <div className="p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <Clapperboard className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <span>
+            <strong>Neuro-Assembler CapCut :</strong> Glissez les clips générés sur Google Flow en face de chaque scène. L&apos;outil synchronise automatiquement les sous-titres et assemble la vidéo finale directement sur votre machine.
+          </span>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-[11px] font-bold text-zinc-400">Format :</span>
+          <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/[0.08]">
+            <button
+              onClick={() => onFormatChange("9:16")}
+              className={clsx(
+                "px-2.5 py-1 rounded text-[11px] font-bold transition-all flex items-center gap-1",
+                format === "9:16" ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-white"
+              )}
+            >
+              <Smartphone className="w-3 h-3" />
+              <span>9:16 Shorts/TikTok</span>
+            </button>
+            <button
+              onClick={() => onFormatChange("16:9")}
+              className={clsx(
+                "px-2.5 py-1 rounded text-[11px] font-bold transition-all flex items-center gap-1",
+                format === "16:9" ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-white"
+              )}
+            >
+              <Monitor className="w-3 h-3" />
+              <span>16:9 Cinéma</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-12 gap-8 items-start">
+        
+        {/* COLONNE GAUCHE (7 cols) : LE MONITEUR VIDÉO & CONTROLES */}
+        <div className="lg:col-span-7 space-y-4">
+          <div className="bg-[#0b0d13] border border-white/[0.08] rounded-2xl p-5 space-y-4 shadow-xl">
+            
+            {/* Header du moniteur */}
+            <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Moniteur de Montage ({format})
+                </span>
+              </div>
+              <div className="text-[11px] text-zinc-400 font-mono">
+                Scène {activeSceneIndex + 1} / {scenes.length} • {uploadedClipsCount} clip(s) prêt(s)
+              </div>
+            </div>
+
+            {/* Écran Vidéo Responsive (Container avec Ratio sélectionné) */}
+            <div className={clsx(
+              "relative mx-auto rounded-xl bg-black border border-white/[0.1] overflow-hidden flex items-center justify-center shadow-2xl",
+              format === "9:16" ? "w-[280px] sm:w-[320px] aspect-[9/16]" : "w-full aspect-video"
+            )}>
+              {currentScene?.videoUrl ? (
+                <video
+                  ref={videoRef}
+                  src={currentScene.videoUrl}
+                  className="w-full h-full object-cover"
+                  playsInline
+                  onEnded={handleVideoEnded}
+                />
+              ) : (
+                <div className="p-6 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mx-auto text-zinc-500">
+                    <Film className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-zinc-300">Scène 0{activeSceneIndex + 1} en attente</p>
+                    <p className="text-[10px] text-zinc-500 mt-0.5">Glissez le clip MP4 Google Flow ci-contre</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Overlay Sous-titres Dynamiques CapCut */}
+              {burnSubtitles && subtitleText && (
+                <div className="absolute bottom-8 left-4 right-4 text-center pointer-events-none transition-all">
+                  {currentDialogue?.speaker && (
+                    <span className="inline-block px-2.5 py-0.5 mb-1.5 rounded bg-indigo-600/90 text-white font-extrabold text-[10px] uppercase tracking-wider shadow-md">
+                      {currentDialogue.speaker}
+                    </span>
+                  )}
+                  <div className="bg-black/75 px-3.5 py-1.5 rounded-xl border border-white/10 shadow-lg max-w-[90%] mx-auto backdrop-blur-sm">
+                    <p className="text-amber-300 font-black text-xs sm:text-sm tracking-wide leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
+                      « {subtitleText.replace(/["«»]/g, "")} »
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Badge format en haut à gauche */}
+              <div className="absolute top-3 left-3 px-2 py-0.5 rounded bg-black/60 backdrop-blur-md border border-white/10 text-[10px] font-mono text-zinc-300">
+                08s • {currentScene?.cameraStyle || "Cinématique"}
+              </div>
+            </div>
+
+            {/* Barre de contrôle du lecteur */}
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={togglePlay}
+                    disabled={!currentScene?.videoUrl}
+                    className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white transition-all shadow-md shadow-indigo-600/20"
+                    title={isPlayingSequence ? "Pause" : "Lire la séquence"}
+                  >
+                    {isPlayingSequence ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setActiveSceneIndex((prev) => Math.max(0, prev - 1))}
+                      disabled={activeSceneIndex === 0}
+                      className="p-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-40 text-zinc-300 transition-colors text-xs font-bold"
+                      title="Scène précédente"
+                    >
+                      ◀
+                    </button>
+                    <button
+                      onClick={() => setActiveSceneIndex((prev) => Math.min(scenes.length - 1, prev + 1))}
+                      disabled={activeSceneIndex === scenes.length - 1}
+                      className="p-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-40 text-zinc-300 transition-colors text-xs font-bold"
+                      title="Scène suivante"
+                    >
+                      ▶
+                    </button>
+                  </div>
+                </div>
+
+                {/* Switch sous-titres */}
+                <button
+                  onClick={() => setBurnSubtitles(!burnSubtitles)}
+                  className={clsx(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                    burnSubtitles 
+                      ? "bg-amber-500/10 border-amber-500/30 text-amber-300" 
+                      : "bg-white/[0.03] border-white/[0.08] text-zinc-500 hover:text-zinc-300"
+                  )}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Sous-titres CapCut {burnSubtitles ? "Activés" : "Désactivés"}</span>
+                </button>
+              </div>
+
+              {/* Bouton d'exportation pro en bas du lecteur */}
+              <div className="pt-2">
+                <button
+                  onClick={handleExport}
+                  disabled={isExporting || uploadedClipsCount === 0}
+                  className={clsx(
+                    "w-full flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-xl",
+                    uploadedClipsCount === 0 
+                      ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/[0.05]" 
+                      : isExporting
+                      ? "bg-indigo-700 text-white cursor-wait"
+                      : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-emerald-600/25 hover:scale-[1.01]"
+                  )}
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Rendu du Montage en cours ({exportProgress}%) ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      <span>Générer et Exporter le Film Final MP4 ({uploadedClipsCount}/{scenes.length} clips)</span>
+                    </>
+                  )}
+                </button>
+
+                {exportError && (
+                  <p className="text-xs text-red-400 mt-2 text-center bg-red-500/10 border border-red-500/20 p-2 rounded-lg">
+                    {exportError}
+                  </p>
+                )}
+
+                {exportSuccessUrl && !isExporting && (
+                  <p className="text-xs text-emerald-400 mt-2 text-center bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg flex items-center justify-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Montage final prêt et téléchargé sur votre machine !</span>
+                  </p>
+                )}
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* COLONNE DROITE (5 cols) : LA TIMELINE SÉQUENTIELLE PAR SCÈNE */}
+        <div className="lg:col-span-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Film className="w-4 h-4 text-indigo-400" />
+              <span>Timeline des Scènes ({scenes.length} x 8s)</span>
+            </h3>
+            <span className="text-[11px] text-zinc-400">
+              Total : ~{Math.round(scenes.length * 8)} secondes
+            </span>
+          </div>
+
+          <div className="space-y-3 max-h-[650px] overflow-y-auto pr-1">
+            {scenes.map((scene, idx) => {
+              const isSelected = activeSceneIndex === idx;
+              const hasVideo = Boolean(scene.videoUrl);
+
+              return (
+                <div
+                  key={scene.id || idx}
+                  onClick={() => setActiveSceneIndex(idx)}
+                  className={clsx(
+                    "p-4 rounded-xl border transition-all cursor-pointer space-y-3",
+                    isSelected
+                      ? "bg-indigo-950/20 border-indigo-500 shadow-md shadow-indigo-500/10"
+                      : "bg-[#0b0d13] border-white/[0.08] hover:border-white/[0.15]"
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <span className={clsx(
+                        "w-6 h-6 rounded-lg text-[10px] font-black flex items-center justify-center",
+                        isSelected ? "bg-indigo-600 text-white" : "bg-white/[0.05] text-zinc-400"
+                      )}>
+                        0{idx + 1}
+                      </span>
+                      <h4 className="text-xs font-bold text-white tracking-tight">
+                        {scene.title || `Scène ${idx + 1}`}
+                      </h4>
+                    </div>
+
+                    <span className={clsx(
+                      "text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border",
+                      hasVideo
+                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-300 border-amber-500/20"
+                    )}>
+                      {hasVideo ? "Clip Chargé" : "En attente MP4"}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-zinc-400 line-clamp-1 italic">
+                    « {scene.dialogues?.[0]?.text || scene.voiceOver} »
+                  </p>
+
+                  {/* Actions Clip : Upload / Retirer / Rogner */}
+                  <div className="pt-1 flex items-center justify-between gap-2" onClick={(e) => e.stopPropagation()}>
+                    <label className={clsx(
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all border",
+                      hasVideo 
+                        ? "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border-white/[0.08]"
+                        : "bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-sm"
+                    )}>
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{hasVideo ? "Remplacer le clip" : "Glisser / Importer MP4"}</span>
+                      <input
+                        type="file"
+                        accept="video/mp4,video/webm,video/quicktime"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleFileUpload(idx, file);
+                        }}
+                      />
+                    </label>
+
+                    {hasVideo && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            const cur = scene.trimStart || 0;
+                            onUpdateScene(idx, { trimStart: Math.max(0, cur + 0.5) });
+                          }}
+                          className="px-2 py-1 rounded bg-white/[0.03] hover:bg-white/[0.08] text-[10px] text-zinc-300 border border-white/[0.06]"
+                          title="Rogner 0.5s au début"
+                        >
+                          <Scissors className="w-3 h-3 inline mr-1" />
+                          Trim +0.5s
+                        </button>
+                        <button
+                          onClick={() => onUpdateScene(idx, { videoUrl: undefined })}
+                          className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20"
+                          title="Supprimer ce clip"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+      </div>
     </div>
   );
 }
