@@ -15,16 +15,67 @@ import {
   ShieldCheck, 
   HelpCircle, 
   Download, 
-  BookOpen
+  BookOpen,
+  Calculator,
+  Sliders,
+  TrendingDown
 } from "lucide-react";
 import clsx from "clsx";
 
 export const dynamic = "force-dynamic";
 
-type DocSection = "free_strategy" | "api_keys" | "google_flow" | "montage" | "faq";
+type DocSection = "free_strategy" | "pricing_simulator" | "api_keys" | "google_flow" | "montage" | "faq";
 
 export default function DocsPage() {
   const [activeSection, setActiveSection] = useState<DocSection>("free_strategy");
+
+  // State du Simulateur de Budget
+  const [filmsPerMonth, setFilmsPerMonth] = useState<number>(10);
+  const [durationMode, setDurationMode] = useState<"90s" | "45s">("90s");
+  const [selectedPlan, setSelectedPlan] = useState<"free" | "hybrid" | "direct_api">("free");
+  const [currency, setCurrency] = useState<"FCFA" | "EUR" | "USD">("FCFA");
+
+  const scenesCount = durationMode === "90s" ? 12 : 6;
+
+  // Calcul du coût unitaire par film en USD
+  const getCostPerFilmUSD = (mode: "free" | "hybrid" | "direct_api"): number => {
+    if (mode === "free") return 0;
+    if (mode === "hybrid") {
+      // Imagen 3 (3 persos * 0.03$ = 0.09$) + ElevenLabs voix (~0.03$) = 0.12$
+      return durationMode === "90s" ? 0.12 : 0.08;
+    }
+    // direct_api : Hybrid (0.12$) + (scenesCount * 0.20$ Grok video)
+    const base = durationMode === "90s" ? 0.12 : 0.08;
+    const videoCost = scenesCount * 0.20;
+    return base + videoCost;
+  };
+
+  const costPerFilmUSD = getCostPerFilmUSD(selectedPlan);
+  const totalMonthlyUSD = costPerFilmUSD * filmsPerMonth;
+
+  // Taux de conversion
+  const USD_TO_EUR = 0.95;
+  const USD_TO_FCFA = 615;
+
+  const formatPrice = (amountUSD: number, targetCurr: "FCFA" | "EUR" | "USD") => {
+    if (amountUSD === 0) {
+      return targetCurr === "FCFA" ? "0 FCFA" : targetCurr === "EUR" ? "0,00 €" : "$0.00";
+    }
+    if (targetCurr === "FCFA") {
+      const fcfa = Math.round(amountUSD * USD_TO_FCFA);
+      return `${fcfa.toLocaleString("fr-FR")} FCFA`;
+    }
+    if (targetCurr === "EUR") {
+      const eur = amountUSD * USD_TO_EUR;
+      return `${eur.toFixed(2).replace(".", ",")} €`;
+    }
+    return `$${amountUSD.toFixed(2)}`;
+  };
+
+  // Coût des concurrents classiques (Abonnements obligatoires)
+  // Runway Gen-3 (35$) + Midjourney Pro (30$) + CapCut Pro (12$) = 77$/mois
+  const competitorMonthlyUSD = 77;
+  const monthlySavingsUSD = Math.max(0, competitorMonthlyUSD - totalMonthlyUSD);
 
   return (
     <div className="min-h-screen bg-[#06070a] text-zinc-100 selection:bg-indigo-500/30 selection:text-white pb-24">
@@ -98,16 +149,29 @@ export default function DocsPage() {
           </button>
 
           <button
-            onClick={() => setActiveSection("api_keys")}
+            onClick={() => setActiveSection("pricing_simulator")}
             className={clsx(
               "flex items-center gap-2.5 px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all border",
-              activeSection === "api_keys"
+              activeSection === "pricing_simulator"
                 ? "bg-amber-600/20 border-amber-500/40 text-amber-300 shadow-lg shadow-amber-500/10"
                 : "bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.08] text-zinc-400 hover:text-white"
             )}
           >
-            <Key className="w-4 h-4 text-amber-400" />
-            <span>2. Le Guide des Clés API (BYOK)</span>
+            <Calculator className="w-4 h-4 text-amber-400" />
+            <span>2. Simulateur de Budget & Grille de Prix</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSection("api_keys")}
+            className={clsx(
+              "flex items-center gap-2.5 px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold transition-all border",
+              activeSection === "api_keys"
+                ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300 shadow-lg shadow-indigo-500/10"
+                : "bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.08] text-zinc-400 hover:text-white"
+            )}
+          >
+            <Key className="w-4 h-4 text-indigo-400" />
+            <span>3. Le Guide des Clés API (BYOK)</span>
           </button>
 
           <button
@@ -120,7 +184,7 @@ export default function DocsPage() {
             )}
           >
             <Film className="w-4 h-4 text-indigo-400" />
-            <span>3. Continuité 8K & Google Flow</span>
+            <span>4. Continuité 8K & Google Flow</span>
           </button>
 
           <button
@@ -133,7 +197,7 @@ export default function DocsPage() {
             )}
           >
             <Layers className="w-4 h-4 text-violet-400" />
-            <span>4. Studio de Montage CapCut</span>
+            <span>5. Studio de Montage CapCut</span>
           </button>
 
           <button
@@ -146,7 +210,7 @@ export default function DocsPage() {
             )}
           >
             <HelpCircle className="w-4 h-4 text-blue-400" />
-            <span>5. FAQ & Dépannage</span>
+            <span>6. FAQ & Dépannage</span>
           </button>
         </div>
 
@@ -236,7 +300,357 @@ export default function DocsPage() {
           </div>
         )}
 
-        {/* SECTION 2 : LE GUIDE DES CLÉS API (BYOK) */}
+        {/* SECTION 2 : SIMULATEUR DE BUDGET & GRILLE DE PRIX */}
+        {activeSection === "pricing_simulator" && (
+          <div className="space-y-10 animate-in fade-in duration-300">
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/[0.08] pb-6">
+              <div className="space-y-2">
+                <h3 className="text-2xl font-bold text-white tracking-tight flex items-center gap-3">
+                  <Calculator className="w-6 h-6 text-amber-400" />
+                  <span>Simulateur de Budget & Grille Tarifaire Transparente</span>
+                </h3>
+                <p className="text-zinc-400 text-sm max-w-2xl leading-relaxed">
+                  Estimez exactement vos dépenses à l&apos;avance en fonction de votre cadence de publication et de votre formule. Zéro frais caché, vous ne payez que ce que vous consommez.
+                </p>
+              </div>
+
+              {/* Sélecteur de Devise */}
+              <div className="flex items-center gap-1 bg-white/[0.04] p-1 rounded-xl border border-white/[0.08] self-start md:self-auto">
+                <button
+                  onClick={() => setCurrency("FCFA")}
+                  className={clsx(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    currency === "FCFA" ? "bg-amber-500 text-black shadow-md shadow-amber-500/20" : "text-zinc-400 hover:text-white"
+                  )}
+                >
+                  FCFA (XOF)
+                </button>
+                <button
+                  onClick={() => setCurrency("EUR")}
+                  className={clsx(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    currency === "EUR" ? "bg-amber-500 text-black shadow-md shadow-amber-500/20" : "text-zinc-400 hover:text-white"
+                  )}
+                >
+                  EUR (€)
+                </button>
+                <button
+                  onClick={() => setCurrency("USD")}
+                  className={clsx(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    currency === "USD" ? "bg-amber-500 text-black shadow-md shadow-amber-500/20" : "text-zinc-400 hover:text-white"
+                  )}
+                >
+                  USD ($)
+                </button>
+              </div>
+            </div>
+
+            {/* Panneau Interactif */}
+            <div className="grid lg:grid-cols-12 gap-8 items-start">
+              
+              {/* Colonne de Configuration (7 cols) */}
+              <div className="lg:col-span-7 space-y-6">
+                
+                {/* 1. Cadence Mensuelle */}
+                <div className="p-6 rounded-3xl bg-[#0b0d13] border border-white/[0.08] space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-indigo-400" />
+                      <span>Volume de production mensuel</span>
+                    </label>
+                    <span className="text-xl font-black text-amber-400 bg-amber-500/10 px-3 py-1 rounded-xl border border-amber-500/20">
+                      {filmsPerMonth} {filmsPerMonth > 1 ? "films / mois" : "film / mois"}
+                    </span>
+                  </div>
+
+                  <input
+                    type="range"
+                    min="1"
+                    max="50"
+                    value={filmsPerMonth}
+                    onChange={(e) => setFilmsPerMonth(Number(e.target.value))}
+                    className="w-full accent-amber-500 cursor-pointer h-2 bg-white/[0.08] rounded-lg"
+                  />
+
+                  {/* Boutons Presets */}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {[
+                      { label: "1 film (Test)", count: 1 },
+                      { label: "4 films (1/sem)", count: 4 },
+                      { label: "12 films (3/sem)", count: 12 },
+                      { label: "30 films (1/jour)", count: 30 }
+                    ].map((preset) => (
+                      <button
+                        key={preset.count}
+                        onClick={() => setFilmsPerMonth(preset.count)}
+                        className={clsx(
+                          "px-3 py-1 rounded-lg text-xs font-semibold transition-all border",
+                          filmsPerMonth === preset.count
+                            ? "bg-indigo-600/30 text-indigo-300 border-indigo-500/50"
+                            : "bg-white/[0.02] text-zinc-500 border-white/[0.05] hover:text-white"
+                        )}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Durée du Film */}
+                <div className="p-6 rounded-3xl bg-[#0b0d13] border border-white/[0.08] space-y-3">
+                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                    <Film className="w-4 h-4 text-indigo-400" />
+                    <span>Format & Durée des Films</span>
+                  </label>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <button
+                      onClick={() => setDurationMode("90s")}
+                      className={clsx(
+                        "p-4 rounded-2xl border text-left transition-all",
+                        durationMode === "90s"
+                          ? "bg-indigo-600/20 border-indigo-500/50 text-white"
+                          : "bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:text-white"
+                      )}
+                    >
+                      <p className="text-sm font-bold text-white mb-1">Court-Métrage 1m30</p>
+                      <p className="text-xs text-zinc-400">11 à 12 scènes de 8 secondes (Format optimal TikTok/YouTube)</p>
+                    </button>
+
+                    <button
+                      onClick={() => setDurationMode("45s")}
+                      className={clsx(
+                        "p-4 rounded-2xl border text-left transition-all",
+                        durationMode === "45s"
+                          ? "bg-indigo-600/20 border-indigo-500/50 text-white"
+                          : "bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:text-white"
+                      )}
+                    >
+                      <p className="text-sm font-bold text-white mb-1">Spot Rapide 45s</p>
+                      <p className="text-xs text-zinc-400">6 scènes de 8 secondes (Teasers, pubs rapides)</p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3. Choix de la Formule */}
+                <div className="space-y-3">
+                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                    Sélectionnez votre niveau d&apos;automatisation :
+                  </label>
+
+                  <div className="space-y-3">
+                    
+                    {/* Option 1 : Malin 100% Gratuit */}
+                    <div
+                      onClick={() => setSelectedPlan("free")}
+                      className={clsx(
+                        "p-5 rounded-2xl border cursor-pointer transition-all flex items-start justify-between gap-4",
+                        selectedPlan === "free"
+                          ? "bg-emerald-950/30 border-emerald-500 shadow-lg shadow-emerald-500/10"
+                          : "bg-[#0b0d13] border-white/[0.08] hover:border-white/[0.15]"
+                      )}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                          <h4 className="text-sm font-bold text-white">Formule 1 : Malin (100% Gratuit)</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase">
+                            Recommandé Débutants
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">
+                          Groq + Web Speech / Quotas ElevenLabs + Bulk Flow copié dans Google Flow / Kling (crédits gratuits) + Montage local.
+                        </p>
+                      </div>
+                      <span className="text-base font-black text-emerald-400 whitespace-nowrap">
+                        0 FCFA / 0 €
+                      </span>
+                    </div>
+
+                    {/* Option 2 : Hybride Semi-Auto */}
+                    <div
+                      onClick={() => setSelectedPlan("hybrid")}
+                      className={clsx(
+                        "p-5 rounded-2xl border cursor-pointer transition-all flex items-start justify-between gap-4",
+                        selectedPlan === "hybrid"
+                          ? "bg-indigo-950/30 border-indigo-500 shadow-lg shadow-indigo-500/10"
+                          : "bg-[#0b0d13] border-white/[0.08] hover:border-white/[0.15]"
+                      )}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-400" />
+                          <h4 className="text-sm font-bold text-white">Formule 2 : Hybride (Voix Studio + Casting 8K)</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 uppercase">
+                            Qualité Pro
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">
+                          Portraits 8K générés directement sur le site via Imagen 3 + Voix ElevenLabs HD. Vidéos 8s générées gratuitement via Google Flow.
+                        </p>
+                      </div>
+                      <span className="text-base font-black text-indigo-300 whitespace-nowrap">
+                        ~{formatPrice(durationMode === "90s" ? 0.12 : 0.08, currency)} / film
+                      </span>
+                    </div>
+
+                    {/* Option 3 : Full Automatique Direct */}
+                    <div
+                      onClick={() => setSelectedPlan("direct_api")}
+                      className={clsx(
+                        "p-5 rounded-2xl border cursor-pointer transition-all flex items-start justify-between gap-4",
+                        selectedPlan === "direct_api"
+                          ? "bg-violet-950/30 border-violet-500 shadow-lg shadow-violet-500/10"
+                          : "bg-[#0b0d13] border-white/[0.08] hover:border-white/[0.15]"
+                      )}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-violet-400" />
+                          <h4 className="text-sm font-bold text-white">Formule 3 : Full Automatique (xAI Grok Video)</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 uppercase">
+                            Zéro Copier-Coller
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">
+                          Les {scenesCount} clips vidéo de 8s sont générés directement depuis le site en 1 clic grâce à votre clé xAI Grok et injectés dans le studio de montage.
+                        </p>
+                      </div>
+                      <span className="text-base font-black text-violet-300 whitespace-nowrap">
+                        ~{formatPrice(costPerFilmUSD, currency)} / film
+                      </span>
+                    </div>
+
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Colonne des Résultats & Économies (5 cols) */}
+              <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-28">
+                
+                {/* Carte Bilan Financier */}
+                <div className="p-7 rounded-3xl bg-gradient-to-br from-[#0e1220] to-[#07090e] border border-amber-500/30 shadow-2xl space-y-6 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-40 h-40 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
+
+                  <div className="border-b border-white/[0.08] pb-4">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400 block mb-1">
+                      Estimation Budgétaire Dédiée
+                    </span>
+                    <h4 className="text-lg font-bold text-white">
+                      Pour {filmsPerMonth} {filmsPerMonth > 1 ? "films" : "film"} ({durationMode})
+                    </h4>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex items-baseline justify-between border-b border-white/[0.06] pb-3">
+                      <span className="text-xs text-zinc-400">Coût estimé par film :</span>
+                      <span className="text-xl font-black text-white">
+                        {formatPrice(costPerFilmUSD, currency)}
+                      </span>
+                    </div>
+
+                    <div className="flex items-baseline justify-between pt-1">
+                      <div>
+                        <span className="text-xs text-zinc-400 block">Budget mensuel total :</span>
+                        <span className="text-[10px] text-zinc-500">Facturé directement par vos fournisseurs API</span>
+                      </div>
+                      <span className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-emerald-400">
+                        {formatPrice(totalMonthlyUSD, currency)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Badge Économies Concurrence */}
+                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 space-y-2">
+                    <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
+                      <TrendingDown className="w-4 h-4" />
+                      <span>Économie face aux abonnements classiques</span>
+                    </div>
+                    <p className="text-xs text-zinc-300 leading-relaxed">
+                      Abonnements classiques (Runway 35$ + Midjourney 30$ + CapCut Pro 12$ = <strong>77 $/mois</strong>) :
+                    </p>
+                    <p className="text-sm font-extrabold text-emerald-300">
+                      Vous économisez environ {formatPrice(monthlySavingsUSD, currency)} / mois !
+                    </p>
+                  </div>
+
+                  <Link
+                    href="/"
+                    className="w-full py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-500/20 hover:scale-[1.01]"
+                  >
+                    <Clapperboard className="w-4 h-4" />
+                    <span>Créer un Film sur NeuroStudio</span>
+                  </Link>
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* Tableau Détaillé des Tarifs Unitaires d'APIs */}
+            <div className="space-y-4 pt-4">
+              <h4 className="text-base font-bold text-white flex items-center gap-2">
+                <Coins className="w-4 h-4 text-amber-400" />
+                <span>Grille Officielle des Coûts Unitaires par Opération</span>
+              </h4>
+
+              <div className="overflow-x-auto rounded-3xl border border-white/[0.08] bg-[#0b0d13]">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-white/[0.08] bg-white/[0.02] text-zinc-400 font-bold uppercase tracking-wider">
+                      <th className="p-4 sm:p-5">Opération</th>
+                      <th className="p-4 sm:p-5">Fournisseur & Modèle</th>
+                      <th className="p-4 sm:p-5">Tarif Unitaire Réel</th>
+                      <th className="p-4 sm:p-5">Impact sur un film 1m30</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.06] text-zinc-300">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Scénario & Découpage 8s</td>
+                      <td className="p-4 sm:p-5">Groq (Llama 3.3 70B / Qwen 2.5)</td>
+                      <td className="p-4 sm:p-5 text-emerald-400 font-bold">0,00 $ (Gratuit à vie)</td>
+                      <td className="p-4 sm:p-5 text-emerald-400 font-semibold">0 FCFA</td>
+                    </tr>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Scénario OpenAI (Optionnel)</td>
+                      <td className="p-4 sm:p-5">ChatGPT (OpenAI GPT-4o)</td>
+                      <td className="p-4 sm:p-5 font-mono text-zinc-400">~0,005 $ / 1k tokens</td>
+                      <td className="p-4 sm:p-5">~0,01 $ (~6 FCFA)</td>
+                    </tr>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Portraits 8K Casting</td>
+                      <td className="p-4 sm:p-5">Google Imagen 3 (Nano Banana)</td>
+                      <td className="p-4 sm:p-5 font-mono text-zinc-400">0,03 $ / image HD</td>
+                      <td className="p-4 sm:p-5">~0,09 $ (0 FCFA avec les 300 $ offerts)</td>
+                    </tr>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Voix Acteurs Cinéma</td>
+                      <td className="p-4 sm:p-5">ElevenLabs Multilingual v2</td>
+                      <td className="p-4 sm:p-5 font-mono text-zinc-400">10k car. offerts, puis 0,30 $ / 10k</td>
+                      <td className="p-4 sm:p-5">0 FCFA (ou ~18 FCFA hors quota)</td>
+                    </tr>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Clips Vidéo 8s Directs</td>
+                      <td className="p-4 sm:p-5">xAI Grok Imagine Video 1.5</td>
+                      <td className="p-4 sm:p-5 font-mono text-zinc-400">~0,20 $ / clip de 8s</td>
+                      <td className="p-4 sm:p-5">~2,40 $ (~1 470 FCFA pour 12 scènes)</td>
+                    </tr>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-4 sm:p-5 font-bold text-white">Montage, Sous-titres & Export</td>
+                      <td className="p-4 sm:p-5">Neuro-Assembler (Client Local)</td>
+                      <td className="p-4 sm:p-5 text-emerald-400 font-bold">0,00 $ (Inclus)</td>
+                      <td className="p-4 sm:p-5 text-emerald-400 font-semibold">0 FCFA (Sans filigrane)</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* SECTION 3 : LE GUIDE DES CLÉS API (BYOK) */}
         {activeSection === "api_keys" && (
           <div className="space-y-10 animate-in fade-in duration-300">
             <div className="space-y-3">
