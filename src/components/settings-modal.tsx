@@ -10,7 +10,6 @@ import {
   Trash2, 
   ExternalLink,
   ShieldCheck,
-  Sparkles,
   BookOpen
 } from "lucide-react";
 import type { UserApiKeys } from "@/lib/types";
@@ -301,19 +300,10 @@ export function SettingsModal({
             <button
               type="button"
               onClick={handleSave}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-indigo-600/30"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-md shadow-indigo-600/20"
             >
-              {savedSuccess ? (
-                <>
-                  <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Enregistré !</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>Sauvegarder</span>
-                </>
-              )}
+              <Check className="w-4 h-4 text-white" />
+              <span>{savedSuccess ? "Enregistré !" : "Sauvegarder"}</span>
             </button>
           </div>
         </div>

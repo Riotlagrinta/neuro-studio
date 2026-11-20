@@ -6,7 +6,8 @@ import {
   Play, 
   Square,
   Volume2,
-  Sparkles, 
+  Camera,
+  Sliders,
   Clapperboard, 
   Save,
   CheckCircle2,
@@ -72,7 +73,7 @@ type AspectRatio = "16:9" | "9:16";
 type ActiveTab = "characters" | "scenes" | "editor";
 
 const GENRES = [
-  { id: "all", name: "Tous Genres", icon: Sparkles },
+  { id: "all", name: "Tous Genres", icon: Clapperboard },
   { id: "action", name: "Action & Thriller", icon: Zap },
   { id: "scifi", name: "Sci-Fi & Futuriste", icon: Rocket },
   { id: "drama", name: "Drame & Émotion", icon: Film },
@@ -339,7 +340,7 @@ export default function Home() {
       {/* Navigation Studio */}
       <header className="h-18 border-b border-white/[0.08] bg-[#06070a]/85 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between px-6 md:px-10">
         <div className="flex items-center gap-3.5 cursor-pointer" onClick={() => setPlan(null)}>
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 flex items-center justify-center shadow-[0_0_20px_-3px_rgba(99,102,241,0.6)] border border-white/20">
+          <div className="w-9 h-9 rounded-xl bg-zinc-900 border border-white/10 flex items-center justify-center text-white">
             <Clapperboard className="w-5 h-5 text-white" />
           </div>
           <div className="flex flex-col">
@@ -429,12 +430,12 @@ export default function Home() {
           <div className="space-y-12 max-w-4xl mx-auto">
             <div className="space-y-6 text-center">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold tracking-wide">
-                <Sparkles className="w-3.5 h-3.5" />
+                <Film className="w-3.5 h-3.5 text-zinc-400" />
                 <span>Sci-Fi, Action, Thriller, Comédie, Drame, Épopée : Tous les genres calibrés pour Flow</span>
               </div>
               <h1 className="text-4xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[1.1] text-white">
                 Donnez vie à vos histoires sur <br className="hidden sm:inline" />
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-violet-300 to-amber-300">
+                <span className="text-white border-b-2 border-indigo-500 pb-0.5">
                   Google Flow
                 </span>
               </h1>
@@ -470,8 +471,8 @@ export default function Home() {
             <div className="space-y-2">
               <div className="flex items-center justify-between px-2">
                 <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                  Moteur Scénario & Prompts :
+                  <Sliders className="w-3.5 h-3.5 text-zinc-400" />
+                  Moteur Scénario & Dialogues :
                 </span>
                 <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.08]">
                   <button
@@ -523,7 +524,7 @@ export default function Home() {
                   disabled={isGenerating || !topic.trim()}
                   className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-7 py-4 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 hover:scale-[1.01]"
                 >
-                  <Sparkles className="w-5 h-5" /> 
+                  <Clapperboard className="w-4 h-4" /> 
                   <span>Créer le Film</span>
                 </button>
               </div>
@@ -574,11 +575,8 @@ export default function Home() {
         {/* Chargement */}
         {isGenerating && (
           <div className="h-[55vh] flex flex-col justify-center items-center gap-6 text-center">
-             <div className="relative">
-                <div className="w-20 h-20 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center animate-pulse">
-                  <Clapperboard className="w-10 h-10 text-indigo-400" />
-                </div>
-                <div className="absolute inset-0 blur-2xl bg-indigo-500/30 animate-pulse" />
+             <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-white/10 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
              </div>
              <div className="space-y-2">
                <h3 className="text-xl font-bold text-white">Écriture du film ({selectedGenre}) & Casting en cours...</h3>
@@ -727,7 +725,7 @@ export default function Home() {
                 <div className="space-y-6">
                   <div className="p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
-                      <Sparkles className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                      <Film className="w-4 h-4 text-zinc-400 flex-shrink-0" />
                       <span>
                         <strong>Mode Showrunner Google Flow :</strong> Copiez le prompt 8K de chaque personnage, créez votre image de référence (Midjourney / Flow), puis injectez-la comme <em>Ingredient</em> pour figer l&apos;identité sur l&apos;ensemble de vos scènes.
                       </span>
@@ -979,7 +977,7 @@ function CharacterCard({
                   disabled={isGeneratingImage}
                   className="text-[10px] text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors font-medium flex items-center gap-1"
                 >
-                  {isGeneratingImage ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
+                  {isGeneratingImage ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Camera className="w-2.5 h-2.5" />}
                   <span>Générer (Nano Banana)</span>
                 </button>
               </div>
@@ -1080,7 +1078,7 @@ function CharacterCard({
         {/* Prompt visuel en anglais (Ingrédient Flow) */}
         <div className="space-y-1.5">
           <label className="text-[9px] font-bold text-amber-400 uppercase tracking-widest block flex items-center gap-1">
-            <Sparkles className="w-3 h-3" />
+            <Camera className="w-3 h-3 text-zinc-400" />
             <span>Prompt Ingrédient 8K (Google Flow / Midjourney)</span>
           </label>
           <textarea
@@ -1280,7 +1278,7 @@ function SceneRowCard({
             {isGeneratingGrok ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+              <Play className="w-3.5 h-3.5" />
             )}
             <span>{isGeneratingGrok ? "Grok 8s en cours..." : "Générer Vidéo (Grok)"}</span>
           </button>
@@ -1295,7 +1293,7 @@ function SceneRowCard({
                 : "bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-600/25 hover:scale-[1.02]"
             )}
           >
-            {copiedFlow ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
+            {copiedFlow ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             <span>{copiedFlow ? "Copié !" : "Copier Prompt Flow"}</span>
           </button>
 
@@ -1340,7 +1338,7 @@ function SceneRowCard({
               disabled={isRefining || !refineInstruction.trim()}
               className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-indigo-600/30"
             >
-              {isRefining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+              {isRefining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
               <span>{isRefining ? "Réécriture..." : "Appliquer la Retouche"}</span>
             </button>
           </div>
@@ -1438,7 +1436,7 @@ function SceneRowCard({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="text-[10px] font-bold text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
+                <Film className="w-3.5 h-3.5 text-zinc-400" />
                 <span>Prompt Vidéo Google Flow (Anglais)</span>
               </label>
               <button
@@ -1719,8 +1717,8 @@ function MontageStudio({
                       : "bg-white/[0.03] border-white/[0.08] text-zinc-500 hover:text-zinc-300"
                   )}
                 >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Sous-titres CapCut {burnSubtitles ? "Activés" : "Désactivés"}</span>
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Sous-titres dynamiques {burnSubtitles ? "Activés" : "Désactivés"}</span>
                 </button>
               </div>
 

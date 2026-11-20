@@ -6,7 +6,6 @@ import {
   Copy, 
   Check, 
   Download, 
-  Sparkles, 
   Film, 
   FileText,
   Clock,
@@ -189,7 +188,7 @@ ${scenesText}
                   : "text-zinc-400 hover:text-white"
               )}
             >
-              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <Film className="w-3.5 h-3.5 text-zinc-400" />
               <span>Prompts Vidéo Uniquement</span>
             </button>
             <button

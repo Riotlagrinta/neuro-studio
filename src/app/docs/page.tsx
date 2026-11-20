@@ -5,7 +5,6 @@ import Link from "next/link";
 import { 
   Clapperboard, 
   ArrowLeft, 
-  Sparkles, 
   Key, 
   Coins, 
   Film, 
@@ -117,15 +116,14 @@ export default function DocsPage() {
       <div className="max-w-7xl mx-auto px-6 md:px-12 pt-10 md:pt-14">
         
         {/* Hero Banner */}
-        <div className="relative rounded-3xl bg-gradient-to-r from-indigo-950/40 via-[#0d101d] to-[#0b0d13] border border-indigo-500/20 p-8 md:p-12 mb-12 overflow-hidden shadow-2xl">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="relative rounded-3xl bg-[#0b0d13] border border-white/[0.1] p-8 md:p-12 mb-12 overflow-hidden shadow-xl">
           <div className="relative z-10 max-w-3xl space-y-4">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold tracking-wide">
-              <Sparkles className="w-3.5 h-3.5" />
+              <Film className="w-3.5 h-3.5" />
               <span>Production Cinématographique Sans Frais Cachés</span>
             </div>
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight leading-tight">
-              Tout comprendre pour créer des films IA pro à <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-indigo-400">0 € / 0 FCFA</span>.
+              Tout comprendre pour créer des films pro à <span className="text-emerald-400 font-black">0 € / 0 FCFA</span>.
             </h2>
             <p className="text-zinc-400 text-sm md:text-base leading-relaxed">
               NeuroStudio a été conçu pour éliminer la frustration des abonnements coûteux. Ce guide vous dévoile comment exploiter les quotas gratuits de chaque IA, configurer vos clés personnelles (BYOK) et monter des vidéos complètes de 1m30 prêtes pour TikTok et YouTube.
@@ -530,9 +528,7 @@ export default function DocsPage() {
               <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-28">
                 
                 {/* Carte Bilan Financier */}
-                <div className="p-7 rounded-3xl bg-gradient-to-br from-[#0e1220] to-[#07090e] border border-amber-500/30 shadow-2xl space-y-6 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-40 h-40 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
-
+                <div className="p-7 rounded-3xl bg-[#0b0d13] border border-amber-500/30 shadow-xl space-y-6 relative">
                   <div className="border-b border-white/[0.08] pb-4">
                     <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400 block mb-1">
                       Estimation Budgétaire Dédiée
@@ -555,7 +551,7 @@ export default function DocsPage() {
                         <span className="text-xs text-zinc-400 block">Budget mensuel total :</span>
                         <span className="text-[10px] text-zinc-500">Facturé directement par vos fournisseurs API</span>
                       </div>
-                      <span className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-emerald-400">
+                      <span className="text-3xl font-black text-white">
                         {formatPrice(totalMonthlyUSD, currency)}
                       </span>
                     </div>
