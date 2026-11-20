@@ -10,7 +10,8 @@ import {
   Trash2, 
   ExternalLink,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  BookOpen
 } from "lucide-react";
 import type { UserApiKeys } from "@/lib/types";
 
@@ -86,15 +87,35 @@ export function SettingsModal({
           </button>
         </div>
 
-        {/* Info Sécurité */}
-        <div className="p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-start gap-3 text-xs text-indigo-300">
-          <ShieldCheck className="w-4 h-4 text-indigo-400 mt-0.5 flex-shrink-0" />
-          <div className="space-y-0.5">
-            <p className="font-semibold text-white">Stockage 100% Local & Sécurisé</p>
-            <p className="text-indigo-200/80 leading-relaxed">
-              Vos clés sont conservées exclusivement dans le stockage local de votre navigateur (<code className="text-indigo-300">localStorage</code>) et transmises de manière éphémère uniquement aux APIs respectives.
-            </p>
+        {/* Info Sécurité & Guide Gratuit */}
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-start gap-3 text-xs text-indigo-300">
+            <ShieldCheck className="w-4 h-4 text-indigo-400 mt-0.5 flex-shrink-0" />
+            <div className="space-y-0.5">
+              <p className="font-semibold text-white">Stockage 100% Local</p>
+              <p className="text-indigo-200/80 leading-relaxed text-[11px]">
+                Vos clés restent uniquement dans votre navigateur (<code className="text-indigo-300">localStorage</code>).
+              </p>
+            </div>
           </div>
+
+          <a
+            href="/docs"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-3.5 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 flex items-start gap-3 text-xs text-emerald-300 transition-all group"
+          >
+            <BookOpen className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0 group-hover:scale-110 transition-transform" />
+            <div className="space-y-0.5">
+              <p className="font-semibold text-white flex items-center gap-1">
+                <span>Guide : Avoir les clés gratuites</span>
+                <ExternalLink className="w-3 h-3 text-emerald-400" />
+              </p>
+              <p className="text-emerald-200/80 leading-relaxed text-[11px]">
+                Tutoriel pour obtenir 10k caractères ElevenLabs et 300$ Google sans payer.
+              </p>
+            </div>
+          </a>
         </div>
 
         {/* Formulaire des Clés */}

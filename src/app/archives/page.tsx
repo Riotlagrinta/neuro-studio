@@ -74,9 +74,14 @@ export default function ArchivesPage() {
           <History className="w-4 h-4 text-indigo-400" />
           <span className="font-bold tracking-tight uppercase text-xs tracking-widest text-white">Archives de Production</span>
         </div>
-        <a href="https://github.com/Riotlagrinta/neuro-studio" target="_blank" rel="noreferrer" className="text-zinc-500 hover:text-white transition-colors">
-          <Github className="w-5 h-5" />
-        </a>
+        <div className="flex items-center gap-4">
+          <Link href="/docs" className="text-zinc-400 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors">
+            <span>Guide & Docs</span>
+          </Link>
+          <a href="https://github.com/Riotlagrinta/neuro-studio" target="_blank" rel="noreferrer" className="text-zinc-500 hover:text-white transition-colors">
+            <Github className="w-5 h-5" />
+          </a>
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-12 md:py-16">

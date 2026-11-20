@@ -36,7 +36,8 @@ import {
   Download,
   Key,
   FileText,
-  Wand2
+  Wand2,
+  BookOpen
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -404,6 +405,15 @@ export default function Home() {
               <span className="text-[10px] text-zinc-500 hidden md:inline">BYOK</span>
             )}
           </button>
+
+          <Link
+            href="/docs"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-500/20 text-indigo-300 hover:text-white transition-all text-xs font-semibold"
+            title="Guide complet de production, clés API et stratégie gratuite"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Guide & Docs</span>
+          </Link>
 
           <Link href="/archives" className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors">
             <History className="w-4 h-4" />
